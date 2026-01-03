@@ -53,8 +53,8 @@ def get_block_style(score: int) -> tuple[str, str, str]:
         return BLOCKS["light"], "bright_black", "black"
 
 
-def get_tile_height(score: int) -> int:
-    """Get tile height based on relevance score."""
+def get_base_tile_height(score: int) -> int:
+    """Get minimum tile height based on relevance score."""
     if score >= 9:
         return 5
     elif score >= 7:
@@ -63,6 +63,11 @@ def get_tile_height(score: int) -> int:
         return 2
     else:
         return 1
+
+
+def get_tile_height(score: int, bonus: int = 0) -> int:
+    """Get tile height with optional bonus for extra space."""
+    return get_base_tile_height(score) + bonus
 
 
 def truncate(text: str, max_len: int) -> str:
@@ -109,15 +114,16 @@ class MosaicTile:
 
     PAGE_DURATION = 3.0  # seconds per page
 
-    def __init__(self, tweet: FilteredTweet, width: int, tile_id: int = 0):
+    def __init__(self, tweet: FilteredTweet, width: int, tile_id: int = 0, height_bonus: int = 0):
         self.tweet = tweet
         self.width = width
         self.score = tweet.relevance_score
         self.is_superdunk = tweet.is_superdunk
-        self.height = get_tile_height(self.score)
+        self.base_height = get_base_tile_height(self.score)
+        self.height = self.base_height + height_bonus
         self.tile_id = tile_id  # Used to stagger page timing
 
-        # Pre-compute pages based on tile size
+        # Pre-compute pages based on tile size (use actual height for content capacity)
         content_width = self.width - 6  # Account for borders and padding
         content_lines = max(1, self.height - 2)  # Lines available for content (minus header/footer)
 
@@ -186,11 +192,13 @@ class MosaicTile:
         if self.total_pages > 1:
             page_indicator = f" [{current_page + 1}/{self.total_pages}]"
 
-        # Build content based on tile size
+        # Build content based on tile size (use base_height for style, height for capacity)
         content_width = self.width - 4  # Account for borders
 
-        if self.height >= 5:
+        if self.base_height >= 5:
             # Large tile: header + paged content + engagement
+            # Available content lines = height - 2 (header + engagement)
+            available_content = max(1, self.height - 2)
             lines = []
 
             # Header with page indicator
@@ -205,11 +213,11 @@ class MosaicTile:
             lines.append(header)
 
             # Content from current page
-            for line in page_lines[:3]:  # Max 3 content lines
+            for line in page_lines[:available_content]:
                 lines.append(Text(line, style="white"))
 
-            # Pad with empty lines if needed
-            while len(lines) < 4:
+            # Pad with empty lines if needed (total = 1 header + available_content + 1 engagement)
+            while len(lines) < available_content + 1:
                 lines.append(Text(""))
 
             # Engagement
@@ -222,8 +230,10 @@ class MosaicTile:
 
             body = Text("\n").join(lines)
 
-        elif self.height >= 3:
-            # Medium tile: header + paged content
+        elif self.base_height >= 3:
+            # Medium tile: header + paged content (no engagement line)
+            # Available content lines = height - 1 (just header)
+            available_content = max(1, self.height - 1)
             lines = []
             header = Text()
             if self.is_superdunk:
@@ -235,26 +245,30 @@ class MosaicTile:
             lines.append(header)
 
             # Content from current page
-            for line in page_lines[:2]:  # Max 2 content lines
+            for line in page_lines[:available_content]:
                 lines.append(Text(line, style="white"))
 
             # Pad if needed
-            while len(lines) < 3:
+            while len(lines) < self.height:
                 lines.append(Text(""))
 
             body = Text("\n").join(lines)
 
-        elif self.height >= 2:
-            # Small tile: header + one line of content
+        elif self.base_height >= 2:
+            # Small tile: header + content lines
+            # Available content lines = height - 1 (just header)
+            available_content = max(1, self.height - 1)
             header = Text()
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 12), style="cyan")
             if page_indicator:
                 header.append(page_indicator, style="dim magenta")
 
-            content_line = page_lines[0] if page_lines else ""
-            content = Text(truncate(content_line, content_width - 5), style="dim")
-            body = Text("\n").join([header, content])
+            lines = [header]
+            for line in page_lines[:available_content]:
+                lines.append(Text(line, style="dim"))
+
+            body = Text("\n").join(lines)
 
         else:
             # Tiny tile: just score and handle (no paging)
@@ -290,11 +304,50 @@ class MosaicDisplay:
         self.width = self.console.width
         self.height = self.console.height
 
-    def create_tiles(self) -> list[MosaicTile]:
-        """Create tiles for all tweets."""
+    def create_tiles(self, available_height: int = 100) -> list[MosaicTile]:
+        """Create tiles for all tweets, expanding if extra space available."""
+        if not self.tweets:
+            return []
+
+        # First pass: calculate minimum heights and categorize
+        large_tweets = [t for t in self.tweets if t.relevance_score >= 9][:3]
+        medium_tweets = [t for t in self.tweets if 7 <= t.relevance_score < 9][:6]
+        small_tweets = [t for t in self.tweets if t.relevance_score < 7][:9]
+
+        all_visible = large_tweets + medium_tweets + small_tweets
+
+        # Calculate minimum height needed
+        min_height = 0
+        for tweet in large_tweets:
+            min_height += get_base_tile_height(tweet.relevance_score) + 3  # +2 border +1 spacing
+        # Medium tiles in rows of 2
+        medium_rows = (len(medium_tweets) + 1) // 2
+        min_height += medium_rows * 6
+        # Small tiles in rows of 3
+        small_rows = (len(small_tweets) + 2) // 3
+        min_height += small_rows * 5
+
+        # Calculate extra height to distribute
+        extra_height = max(0, available_height - min_height)
+
+        # Distribute extra height to tiles (prioritize by score)
+        # Give bonus lines to tiles that would benefit most
+        height_bonuses = {}
+        if extra_height > 0 and all_visible:
+            # Give more bonus to higher-scored tweets
+            remaining = extra_height
+            for tweet in sorted(all_visible, key=lambda t: t.relevance_score, reverse=True):
+                if remaining <= 0:
+                    break
+                # Give up to 3 bonus lines per tile
+                bonus = min(3, remaining)
+                height_bonuses[tweet.tweet.id] = bonus
+                remaining -= bonus
+
+        # Second pass: create tiles with bonuses
         tiles = []
         for i, tweet in enumerate(self.tweets):
-            # Width varies by score too
+            # Width varies by score
             if tweet.relevance_score >= 9:
                 width = min(self.width - 2, 80)
             elif tweet.relevance_score >= 7:
@@ -304,7 +357,9 @@ class MosaicDisplay:
             else:
                 width = min(self.width - 2, 40)
 
-            tiles.append(MosaicTile(tweet, width, tile_id=i))
+            bonus = height_bonuses.get(tweet.tweet.id, 0)
+            tiles.append(MosaicTile(tweet, width, tile_id=i, height_bonus=bonus))
+
         return tiles
 
     def render_header(self) -> Text:
@@ -335,7 +390,6 @@ class MosaicDisplay:
 
     def render(self) -> Group:
         """Render the full mosaic display, respecting terminal bounds."""
-        tiles = self.create_tiles()
         now = time.time()
 
         # Get current terminal dimensions
@@ -347,6 +401,9 @@ class MosaicDisplay:
         FOOTER_LINES = 3
         PADDING = 2
         available_height = term_height - HEADER_LINES - FOOTER_LINES - PADDING
+
+        # Create tiles with height expansion based on available space
+        tiles = self.create_tiles(available_height)
 
         elements: list[RenderableType] = [
             Align.center(self.render_header()),
@@ -375,46 +432,65 @@ class MosaicDisplay:
                     used_height += tile_height + 1  # +1 for spacing
                     shown_count += 1
 
-            # Render medium tiles in a row (each row takes ~5 lines)
-            if medium_tiles and used_height + 6 <= available_height:
+            # Render medium tiles in rows (use actual tile heights)
+            if medium_tiles:
                 table = Table.grid(padding=1)
                 table.add_column()
                 table.add_column()
 
-                rows_to_show = min(3, (available_height - used_height) // 6)
-                tiles_to_show = rows_to_show * 2
+                added_medium = 0
+                for i in range(0, len(medium_tiles), 2):
+                    # Get actual height of tallest tile in this row
+                    row_height = medium_tiles[i].height + 3  # +2 border +1 padding
+                    if i + 1 < len(medium_tiles):
+                        row_height = max(row_height, medium_tiles[i + 1].height + 3)
 
-                for i in range(0, min(len(medium_tiles), tiles_to_show), 2):
+                    if used_height + row_height > available_height:
+                        break
+
                     row = [medium_tiles[i].render(now)]
                     shown_count += 1
-                    if i + 1 < min(len(medium_tiles), tiles_to_show):
+                    added_medium += 1
+                    if i + 1 < len(medium_tiles):
                         row.append(medium_tiles[i + 1].render(now))
                         shown_count += 1
+                        added_medium += 1
                     table.add_row(*row)
-                    used_height += 6
+                    used_height += row_height
 
-                elements.append(Align.center(table))
+                if added_medium > 0:
+                    elements.append(Align.center(table))
 
-            # Render small tiles compactly (each row takes ~4 lines)
-            if small_tiles and used_height + 5 <= available_height:
+            # Render small tiles compactly (use actual tile heights)
+            if small_tiles:
                 small_table = Table.grid(padding=0)
                 for _ in range(3):
                     small_table.add_column()
 
-                rows_to_show = min(3, (available_height - used_height) // 5)
-                tiles_to_show = rows_to_show * 3
+                added_small = 0
+                for i in range(0, len(small_tiles), 3):
+                    # Get actual height of tallest tile in this row
+                    row_height = small_tiles[i].height + 3
+                    for j in range(1, 3):
+                        if i + j < len(small_tiles):
+                            row_height = max(row_height, small_tiles[i + j].height + 3)
 
-                for i in range(0, min(len(small_tiles), tiles_to_show), 3):
+                    if used_height + row_height > available_height:
+                        break
+
                     row = [small_tiles[i].render(now)]
                     shown_count += 1
+                    added_small += 1
                     for j in range(1, 3):
-                        if i + j < min(len(small_tiles), tiles_to_show):
+                        if i + j < len(small_tiles):
                             row.append(small_tiles[i + j].render(now))
                             shown_count += 1
+                            added_small += 1
                     small_table.add_row(*row)
-                    used_height += 5
+                    used_height += row_height
 
-                elements.append(Align.center(small_table))
+                if added_small > 0:
+                    elements.append(Align.center(small_table))
 
             # Show indicator if some tweets are hidden
             hidden_count = total_count - shown_count
