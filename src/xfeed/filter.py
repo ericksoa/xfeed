@@ -18,6 +18,7 @@ Here are the user's interests and objectives:
 For each tweet, you will:
 1. Score its relevance from 0-10 (10 = highly relevant, 0 = completely irrelevant)
 2. Provide a brief reason (1 sentence) explaining the score
+3. Identify "superdunks" - quote tweets where someone provides an educational correction, insightful counter-argument, or exposes flawed reasoning in the quoted content
 
 Be strict in your scoring:
 - 8-10: Directly matches stated interests, high-value content
@@ -25,11 +26,22 @@ Be strict in your scoring:
 - 2-4: Weakly related, mostly noise
 - 0-1: Completely irrelevant or matches exclusion criteria
 
+SUPERDUNK DETECTION:
+A "superdunk" is when someone quote-tweets a bad take and provides:
+- A factual correction with evidence or expertise
+- An insightful reframe that exposes flawed logic
+- Educational context that the original poster missed
+- A genuinely clever observation that teaches something
+
+NOT a superdunk: simple mockery, "ratio" attempts, pile-ons, hot takes responding to hot takes.
+The VALUE is in the reply/quote being genuinely educational, not just "winning."
+
 If a tweet matches any "Exclude" criteria, score it 0-1 regardless of other content.
 
 Respond with a JSON array in this exact format:
 [
-  {{"id": "tweet_id", "score": 8, "reason": "Brief explanation"}},
+  {{"id": "tweet_id", "score": 8, "reason": "Brief explanation", "superdunk": false}},
+  {{"id": "tweet_id", "score": 9, "reason": "Excellent correction of a common misconception", "superdunk": true}},
   ...
 ]"""
 
@@ -45,12 +57,21 @@ def format_tweets_for_prompt(tweets: list[Tweet]) -> str:
     """Format tweets as JSON for the prompt."""
     tweet_data = []
     for tweet in tweets:
-        tweet_data.append({
+        data = {
             "id": tweet.id,
             "author": f"{tweet.author} ({tweet.author_handle})",
             "content": tweet.content[:500],  # Truncate very long tweets
             "engagement": f"{tweet.likes} likes, {tweet.retweets} RTs",
-        })
+        }
+
+        # Include quoted tweet if present (for superdunk detection)
+        if tweet.quoted_tweet:
+            data["quoted_tweet"] = {
+                "author": f"{tweet.quoted_tweet.author} ({tweet.quoted_tweet.author_handle})",
+                "content": tweet.quoted_tweet.content[:400],
+            }
+
+        tweet_data.append(data)
     return json.dumps(tweet_data, indent=2)
 
 
@@ -132,12 +153,14 @@ def filter_tweets(
                 tweet_id = score_data.get("id")
                 score = score_data.get("score", 0)
                 reason = score_data.get("reason", "")
+                is_superdunk = score_data.get("superdunk", False)
 
                 if tweet_id in tweet_lookup and score >= threshold:
                     filtered_tweets.append(FilteredTweet(
                         tweet=tweet_lookup[tweet_id],
                         relevance_score=score,
                         reason=reason,
+                        is_superdunk=is_superdunk,
                     ))
 
         except Exception as e:

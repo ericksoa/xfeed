@@ -73,24 +73,98 @@ def truncate(text: str, max_len: int) -> str:
     return text[:max_len - 1] + "…"
 
 
+def split_into_pages(text: str, line_width: int, lines_per_page: int) -> list[list[str]]:
+    """Split text into pages of wrapped lines."""
+    text = text.replace("\n", " ").strip()
+    words = text.split()
+
+    all_lines = []
+    current_line = ""
+
+    for word in words:
+        if not current_line:
+            current_line = word
+        elif len(current_line) + 1 + len(word) <= line_width:
+            current_line += " " + word
+        else:
+            all_lines.append(current_line)
+            current_line = word
+
+    if current_line:
+        all_lines.append(current_line)
+
+    if not all_lines:
+        return [[]]
+
+    # Split lines into pages
+    pages = []
+    for i in range(0, len(all_lines), lines_per_page):
+        pages.append(all_lines[i:i + lines_per_page])
+
+    return pages if pages else [[]]
+
+
 class MosaicTile:
     """A single tile in the mosaic representing a tweet."""
 
-    def __init__(self, tweet: FilteredTweet, width: int):
+    PAGE_DURATION = 3.0  # seconds per page
+
+    def __init__(self, tweet: FilteredTweet, width: int, tile_id: int = 0):
         self.tweet = tweet
         self.width = width
         self.score = tweet.relevance_score
+        self.is_superdunk = tweet.is_superdunk
         self.height = get_tile_height(self.score)
-        self.age = 0  # For animation effects
-        self.pulse = 0.0  # For pulse animation
+        self.tile_id = tile_id  # Used to stagger page timing
 
-    def render(self, animate_phase: float = 0) -> Panel:
+        # Pre-compute pages based on tile size
+        content_width = self.width - 6  # Account for borders and padding
+        content_lines = max(1, self.height - 2)  # Lines available for content (minus header/footer)
+
+        # For superdunks, include the quoted content as context
+        if self.is_superdunk and tweet.tweet.quoted_tweet:
+            # First page(s): the quoted tweet (the bad take)
+            quoted = tweet.tweet.quoted_tweet
+            quoted_prefix = f"💬 {quoted.author_handle}: {quoted.content}"
+            self.quoted_pages = split_into_pages(quoted_prefix, content_width, content_lines)
+
+            # Following page(s): the dunk (the reply)
+            dunk_prefix = f"🎯 {tweet.tweet.content}"
+            self.dunk_pages = split_into_pages(dunk_prefix, content_width, content_lines)
+
+            # Combine: show quoted first, then dunk
+            self.pages = self.quoted_pages + self.dunk_pages
+        else:
+            self.pages = split_into_pages(
+                tweet.tweet.content,
+                content_width,
+                content_lines
+            )
+            self.quoted_pages = []
+            self.dunk_pages = []
+
+        self.total_pages = len(self.pages)
+
+    def get_current_page(self, time_now: float) -> int:
+        """Get current page index based on time, staggered by tile_id."""
+        if self.total_pages <= 1:
+            return 0
+        # Stagger each tile by 0.5 seconds based on tile_id
+        offset_time = time_now + (self.tile_id * 0.5)
+        cycle_position = (offset_time / self.PAGE_DURATION) % self.total_pages
+        return int(cycle_position)
+
+    def render(self, time_now: float = 0) -> Panel:
         """Render this tile as a Rich Panel."""
         t = self.tweet.tweet
         block, fg, bg = get_block_style(self.score)
 
-        # Determine border style based on score
-        if self.score >= 9:
+        # Determine border style based on score and superdunk status
+        if self.is_superdunk:
+            # Special treatment for superdunks - green/teal with double border
+            border_style = "bold bright_green"
+            box_type = box.DOUBLE
+        elif self.score >= 9:
             border_style = "bold red"
             box_type = box.DOUBLE
         elif self.score >= 7:
@@ -103,27 +177,40 @@ class MosaicTile:
             border_style = "dim"
             box_type = box.MINIMAL
 
+        # Get current page
+        current_page = self.get_current_page(time_now)
+        page_lines = self.pages[current_page] if current_page < len(self.pages) else []
+
+        # Page indicator (only show if multiple pages)
+        page_indicator = ""
+        if self.total_pages > 1:
+            page_indicator = f" [{current_page + 1}/{self.total_pages}]"
+
         # Build content based on tile size
         content_width = self.width - 4  # Account for borders
 
         if self.height >= 5:
-            # Large tile: full content
+            # Large tile: header + paged content + engagement
             lines = []
-            # Header
+
+            # Header with page indicator
             header = Text()
+            if self.is_superdunk:
+                header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 20), style="bold cyan")
             header.append(f" · {t.formatted_time}", style="dim")
+            if page_indicator:
+                header.append(page_indicator, style="dim magenta")
             lines.append(header)
 
-            # Content (multiple lines)
-            content = t.content.replace("\n", " ")
-            remaining = content
-            for _ in range(2):
-                if remaining:
-                    line_text = truncate(remaining, content_width)
-                    lines.append(Text(line_text))
-                    remaining = remaining[len(line_text):].strip()
+            # Content from current page
+            for line in page_lines[:3]:  # Max 3 content lines
+                lines.append(Text(line, style="white"))
+
+            # Pad with empty lines if needed
+            while len(lines) < 4:
+                lines.append(Text(""))
 
             # Engagement
             eng = Text()
@@ -136,28 +223,41 @@ class MosaicTile:
             body = Text("\n").join(lines)
 
         elif self.height >= 3:
-            # Medium tile: author + truncated content
+            # Medium tile: header + paged content
             lines = []
             header = Text()
+            if self.is_superdunk:
+                header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 15), style="cyan")
+            if page_indicator:
+                header.append(page_indicator, style="dim magenta")
             lines.append(header)
 
-            content = truncate(t.content.replace("\n", " "), content_width)
-            lines.append(Text(content, style="white"))
+            # Content from current page
+            for line in page_lines[:2]:  # Max 2 content lines
+                lines.append(Text(line, style="white"))
+
+            # Pad if needed
+            while len(lines) < 3:
+                lines.append(Text(""))
 
             body = Text("\n").join(lines)
 
         elif self.height >= 2:
-            # Small tile: compact single line + author
+            # Small tile: header + one line of content
             header = Text()
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 12), style="cyan")
-            content = Text(truncate(t.content.replace("\n", " "), content_width - 5), style="dim")
+            if page_indicator:
+                header.append(page_indicator, style="dim magenta")
+
+            content_line = page_lines[0] if page_lines else ""
+            content = Text(truncate(content_line, content_width - 5), style="dim")
             body = Text("\n").join([header, content])
 
         else:
-            # Tiny tile: just score and handle
+            # Tiny tile: just score and handle (no paging)
             body = Text()
             body.append(f"[{self.score}] ", style=f"{fg}")
             body.append(truncate(t.author_handle, content_width - 5), style="dim cyan")
@@ -193,7 +293,7 @@ class MosaicDisplay:
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for all tweets."""
         tiles = []
-        for tweet in self.tweets:
+        for i, tweet in enumerate(self.tweets):
             # Width varies by score too
             if tweet.relevance_score >= 9:
                 width = min(self.width - 2, 80)
@@ -204,7 +304,7 @@ class MosaicDisplay:
             else:
                 width = min(self.width - 2, 40)
 
-            tiles.append(MosaicTile(tweet, width))
+            tiles.append(MosaicTile(tweet, width, tile_id=i))
         return tiles
 
     def render_header(self) -> Text:
@@ -228,12 +328,25 @@ class MosaicDisplay:
         legend.append("█ 9-10 ", style="red")
         legend.append("▓ 7-8 ", style="yellow")
         legend.append("▒ 5-6 ", style="blue")
-        legend.append("░ <5", style="dim")
+        legend.append("░ <5 ", style="dim")
+        legend.append("│ ", style="dim")
+        legend.append("🎯 superdunk", style="bright_green")
         return legend
 
     def render(self) -> Group:
-        """Render the full mosaic display."""
+        """Render the full mosaic display, respecting terminal bounds."""
         tiles = self.create_tiles()
+        now = time.time()
+
+        # Get current terminal dimensions
+        term_height = self.console.height
+        term_width = self.console.width
+
+        # Reserve space for header (2 lines), footer (3 lines), and some padding
+        HEADER_LINES = 2
+        FOOTER_LINES = 3
+        PADDING = 2
+        available_height = term_height - HEADER_LINES - FOOTER_LINES - PADDING
 
         elements: list[RenderableType] = [
             Align.center(self.render_header()),
@@ -250,39 +363,65 @@ class MosaicDisplay:
             medium_tiles = [t for t in tiles if 7 <= t.score < 9]
             small_tiles = [t for t in tiles if t.score < 7]
 
+            used_height = 0
+            shown_count = 0
+            total_count = len(tiles)
+
             # Render large tiles (centered, full width)
             for tile in large_tiles[:3]:  # Max 3 large tiles
-                elements.append(Align.center(tile.render(self.animation_phase)))
+                tile_height = tile.height + 2  # Panel adds 2 for borders
+                if used_height + tile_height <= available_height:
+                    elements.append(Align.center(tile.render(now)))
+                    used_height += tile_height + 1  # +1 for spacing
+                    shown_count += 1
 
-            # Render medium tiles in a row
-            if medium_tiles:
-                # Create a table for side-by-side layout
+            # Render medium tiles in a row (each row takes ~5 lines)
+            if medium_tiles and used_height + 6 <= available_height:
                 table = Table.grid(padding=1)
                 table.add_column()
                 table.add_column()
 
-                for i in range(0, len(medium_tiles[:6]), 2):
-                    row = [medium_tiles[i].render(self.animation_phase)]
-                    if i + 1 < len(medium_tiles[:6]):
-                        row.append(medium_tiles[i + 1].render(self.animation_phase))
+                rows_to_show = min(3, (available_height - used_height) // 6)
+                tiles_to_show = rows_to_show * 2
+
+                for i in range(0, min(len(medium_tiles), tiles_to_show), 2):
+                    row = [medium_tiles[i].render(now)]
+                    shown_count += 1
+                    if i + 1 < min(len(medium_tiles), tiles_to_show):
+                        row.append(medium_tiles[i + 1].render(now))
+                        shown_count += 1
                     table.add_row(*row)
+                    used_height += 6
 
                 elements.append(Align.center(table))
 
-            # Render small tiles compactly
-            if small_tiles:
+            # Render small tiles compactly (each row takes ~4 lines)
+            if small_tiles and used_height + 5 <= available_height:
                 small_table = Table.grid(padding=0)
                 for _ in range(3):
                     small_table.add_column()
 
-                for i in range(0, len(small_tiles[:9]), 3):
-                    row = [small_tiles[i].render(self.animation_phase)]
+                rows_to_show = min(3, (available_height - used_height) // 5)
+                tiles_to_show = rows_to_show * 3
+
+                for i in range(0, min(len(small_tiles), tiles_to_show), 3):
+                    row = [small_tiles[i].render(now)]
+                    shown_count += 1
                     for j in range(1, 3):
-                        if i + j < len(small_tiles[:9]):
-                            row.append(small_tiles[i + j].render(self.animation_phase))
+                        if i + j < min(len(small_tiles), tiles_to_show):
+                            row.append(small_tiles[i + j].render(now))
+                            shown_count += 1
                     small_table.add_row(*row)
+                    used_height += 5
 
                 elements.append(Align.center(small_table))
+
+            # Show indicator if some tweets are hidden
+            hidden_count = total_count - shown_count
+            if hidden_count > 0:
+                elements.append(
+                    Align.center(Text(f"  +{hidden_count} more tweets (resize terminal to see)", style="dim italic"))
+                )
 
         # Footer with legend
         elements.append(Text())
@@ -340,9 +479,6 @@ async def run_mosaic(
                     if new_tweets:
                         mosaic.update_tweets(new_tweets)
                     last_refresh = now
-
-                # Update animation phase
-                mosaic.animation_phase = (now % 2) / 2  # 0-1 cycle every 2 seconds
 
                 # Update display
                 live.update(mosaic.render())

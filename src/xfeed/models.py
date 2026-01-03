@@ -5,6 +5,15 @@ from datetime import datetime
 
 
 @dataclass
+class QuotedTweet:
+    """Represents a quoted tweet embedded in another tweet."""
+
+    author: str
+    author_handle: str
+    content: str
+
+
+@dataclass
 class Tweet:
     """Represents a tweet from the X timeline."""
 
@@ -18,6 +27,7 @@ class Tweet:
     replies: int = 0
     has_media: bool = False
     url: str = ""
+    quoted_tweet: QuotedTweet | None = None  # For quote tweets
 
     @property
     def formatted_time(self) -> str:
@@ -42,3 +52,4 @@ class FilteredTweet:
     tweet: Tweet
     relevance_score: int  # 0-10
     reason: str  # Why it's relevant
+    is_superdunk: bool = False  # Quote tweet with educational correction/insight

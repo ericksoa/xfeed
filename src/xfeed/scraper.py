@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import browser_cookie3
 from playwright.async_api import async_playwright, Page
 
-from xfeed.models import Tweet
+from xfeed.models import Tweet, QuotedTweet
 
 
 # Selectors for X's DOM - these may need updating if X changes their structure
@@ -18,6 +18,9 @@ LIKE_COUNT_SELECTOR = '[data-testid="like"] span'
 RETWEET_COUNT_SELECTOR = '[data-testid="retweet"] span'
 REPLY_COUNT_SELECTOR = '[data-testid="reply"] span'
 TIME_SELECTOR = "time"
+# Quote tweet is embedded in a card/container - try multiple selectors
+QUOTE_TWEET_SELECTOR = '[data-testid="quoteTweet"]'
+QUOTE_TWEET_ALT_SELECTOR = 'div[role="link"][tabindex="0"]'  # Fallback
 
 
 def get_x_cookies_from_chrome() -> list[dict]:
@@ -96,6 +99,53 @@ def parse_relative_time(time_str: str) -> datetime:
     return now
 
 
+async def extract_quoted_tweet(article) -> QuotedTweet | None:
+    """Extract quoted tweet data if present."""
+    try:
+        # Try primary selector first
+        quote_elem = await article.query_selector(QUOTE_TWEET_SELECTOR)
+
+        if not quote_elem:
+            # Try looking for a nested tweet-like structure
+            # Quote tweets often have their own tweetText and User-Name inside a card
+            inner_cards = await article.query_selector_all('div[data-testid="card.wrapper"]')
+            for card in inner_cards:
+                text_elem = await card.query_selector(TWEET_TEXT_SELECTOR)
+                if text_elem:
+                    quote_elem = card
+                    break
+
+        if not quote_elem:
+            return None
+
+        # Get quoted author
+        user_elem = await quote_elem.query_selector(USER_NAME_SELECTOR)
+        if user_elem:
+            user_text = await user_elem.inner_text()
+            lines = user_text.strip().split("\n")
+            author = lines[0] if lines else "Unknown"
+            author_handle = lines[1] if len(lines) > 1 else "@unknown"
+        else:
+            # Try to find any user reference in the quote
+            author = "Unknown"
+            author_handle = "@unknown"
+
+        # Get quoted content
+        text_elem = await quote_elem.query_selector(TWEET_TEXT_SELECTOR)
+        content = await text_elem.inner_text() if text_elem else ""
+
+        if not content:
+            return None
+
+        return QuotedTweet(
+            author=author,
+            author_handle=author_handle,
+            content=content[:500],  # Truncate long quotes
+        )
+    except Exception:
+        return None
+
+
 async def extract_tweet_data(article, page: Page) -> Tweet | None:
     """Extract tweet data from an article element."""
     try:
@@ -145,6 +195,9 @@ async def extract_tweet_data(article, page: Page) -> Tweet | None:
         has_media = bool(await article.query_selector('[data-testid="tweetPhoto"]')) or \
                     bool(await article.query_selector('[data-testid="videoPlayer"]'))
 
+        # Check for quoted tweet
+        quoted_tweet = await extract_quoted_tweet(article)
+
         return Tweet(
             id=tweet_id,
             author=author,
@@ -156,6 +209,7 @@ async def extract_tweet_data(article, page: Page) -> Tweet | None:
             replies=parse_count(reply_text),
             has_media=has_media,
             url=f"https://x.com{tweet_url}" if tweet_url.startswith("/") else tweet_url,
+            quoted_tweet=quoted_tweet,
         )
     except Exception:
         return None
