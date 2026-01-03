@@ -316,35 +316,37 @@ class VibeCard:
         # Content width = panel width - 2 (borders) - 2 (padding)
         content_width = self.width - 4
 
-        # Vibe line with cell-aware truncation
+        # Vibe line - build complete line then truncate
+        count_suffix = f" ({v.tweet_count})"
         vibe_line = Text()
-        vibe_text = Text(v.vibe, style="italic cyan")
-        vibe_text.truncate(content_width - 6, overflow="ellipsis")  # Leave room for " (XX)"
-        vibe_line.append(vibe_text)
-        vibe_line.append(f" ({v.tweet_count})", style="dim")
+        vibe_line.append(v.vibe, style="italic cyan")
+        vibe_line.append(count_suffix, style="dim")
+        vibe_line.truncate(content_width, overflow="ellipsis")
         lines.append(vibe_line)
 
         # Description with cell-aware truncation
         desc_text = Text(v.description, style="white")
-        desc_text.truncate(content_width * 2, overflow="ellipsis")  # Allow 2 lines worth
+        desc_text.truncate(content_width, overflow="ellipsis")
         lines.append(desc_text)
 
         body = Text("\n").join(lines)
 
-        # Truncate title for border
-        title_max = self.width - 6  # Leave room for border chars
-        title = f"{v.emoji} {v.topic}"
-        if len(title) > title_max:
-            title = title[:title_max - 1] + "…"
+        # Build title - strip variation selectors from emoji for consistent width
+        # Variation selectors (U+FE0F) cause width miscalculation
+        emoji = v.emoji.replace("\ufe0f", "")
+        # Account for border chars: "╭─ " (3) + " ─╮" (3) = 6, plus emoji (2) + space (1)
+        title_max = self.width - 6
+        title_text = Text(f"{emoji} {v.topic}")
+        title_text.truncate(title_max, overflow="ellipsis")
 
         return Panel(
             body,
-            title=title,
+            title=title_text,
             title_align="left",
             box=box.ROUNDED,
             border_style="bright_magenta",
             width=self.width,
-            height=5,
+            height=4,  # 2 borders + 2 content lines
             padding=(0, 1),
         )
 
