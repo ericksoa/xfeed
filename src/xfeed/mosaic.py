@@ -612,7 +612,7 @@ class MosaicDisplay:
         return Align.center(table)
 
     def render_engagement_section(self) -> RenderableType | None:
-        """Render the my engagement section."""
+        """Render the my engagement section (full width)."""
         if not self.engagement_stats:
             return None
 
@@ -620,9 +620,10 @@ class MosaicDisplay:
         if not self.engagement_stats.my_handle or self.engagement_stats.my_handle == "unknown":
             return None
 
-        width = min(self.console.width - 4, 60)
+        # Use full terminal width
+        width = self.console.width - 2
         card = EngagementCard(self.engagement_stats, width=width)
-        return Align.center(card.render())
+        return card.render()
 
     def render_header(self) -> Text:
         """Render the header bar."""
@@ -672,12 +673,6 @@ class MosaicDisplay:
             elements.append(vibe_section)
             elements.append(Text())
 
-        # Add engagement section
-        engagement_section = self.render_engagement_section()
-        if engagement_section:
-            elements.append(engagement_section)
-            elements.append(Text())
-
         if not tiles:
             elements.append(Align.center(Text("No tweets to display...", style="dim italic")))
         else:
@@ -717,6 +712,12 @@ class MosaicDisplay:
                     small_table.add_row(*row)
 
                 elements.append(Align.center(small_table))
+
+        # Add engagement section at bottom, above commands
+        engagement_section = self.render_engagement_section()
+        if engagement_section:
+            elements.append(Text())
+            elements.append(engagement_section)
 
         elements.append(Text())
         elements.append(Align.center(self.render_legend()))
