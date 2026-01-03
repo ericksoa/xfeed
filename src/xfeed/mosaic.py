@@ -541,8 +541,12 @@ class MosaicDisplay:
         engagement_stats: MyEngagementStats | None = None,
         refresh_callback=None,
         refresh_interval: int = 300,
+        threshold: int = 5,
+        count: int = 20,
     ):
-        self.tweets = sorted(tweets, key=lambda x: x.relevance_score, reverse=True)
+        # Store all tweets for re-filtering when threshold changes
+        self._all_tweets = sorted(tweets, key=lambda x: x.relevance_score, reverse=True)
+        self.tweets = self._all_tweets  # Currently displayed tweets
         self.vibes = vibes or []
         self.engagement_stats = engagement_stats
         self.console = Console()
@@ -550,6 +554,11 @@ class MosaicDisplay:
         self.refresh_interval = refresh_interval
         self.last_refresh = time.time()
         self.url_shortcuts: dict[int, str] = {}  # Maps 1-9 to tweet URLs
+
+        # Mutable criteria state
+        self.threshold = threshold
+        self.count = count
+        self.count_options = [10, 20, 50, 100]
 
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for tweets with shortcut numbers."""
@@ -590,6 +599,18 @@ class MosaicDisplay:
     def get_url_for_shortcut(self, num: int) -> str | None:
         """Get the URL for a shortcut number (1-9)."""
         return self.url_shortcuts.get(num)
+
+    def refilter_tweets(self):
+        """Re-filter current tweets with updated threshold."""
+        self.tweets = [t for t in self._all_tweets if t.relevance_score >= self.threshold]
+
+    def cycle_count(self):
+        """Cycle through count options: 10 → 20 → 50 → 100 → 10."""
+        if self.count in self.count_options:
+            idx = self.count_options.index(self.count)
+            self.count = self.count_options[(idx + 1) % len(self.count_options)]
+        else:
+            self.count = self.count_options[0]
 
     def render_vibe_section(self) -> RenderableType | None:
         """Render the vibe of the day section."""
@@ -641,8 +662,10 @@ class MosaicDisplay:
         header.append(" XFEED MOSAIC ", style="bold white on red")
         header.append("▄" * 20, style="bright_red")
         header.append(f"  {now}", style="dim")
+        header.append(f"  │  threshold: {self.threshold}+", style="cyan")
+        header.append(f"  │  count: {self.count}", style="cyan")
         header.append(f"  │  refresh in {int(next_refresh)}s", style="dim")
-        header.append(f"  │  {displayed} tweets", style="dim")
+        header.append(f"  │  {displayed} showing", style="dim")
 
         return header
 
@@ -721,7 +744,7 @@ class MosaicDisplay:
 
         elements.append(Text())
         elements.append(Align.center(self.render_legend()))
-        elements.append(Align.center(Text("[1-9] open  [r]efresh  [q]uit", style="dim")))
+        elements.append(Align.center(Text("[1-9] open  [+/-] threshold  [c]ount  [o]bjectives  [r]efresh  [q]uit", style="dim")))
 
         return Group(*elements)
 
@@ -732,7 +755,9 @@ class MosaicDisplay:
         engagement_stats: MyEngagementStats | None = None,
     ):
         """Update with new tweets, vibes, and engagement stats."""
-        self.tweets = sorted(tweets, key=lambda x: x.relevance_score, reverse=True)
+        # Store all tweets for re-filtering, then filter by current threshold
+        self._all_tweets = sorted(tweets, key=lambda x: x.relevance_score, reverse=True)
+        self.refilter_tweets()
         if vibes is not None:
             self.vibes = vibes
         if engagement_stats is not None:
@@ -748,6 +773,27 @@ def set_terminal_title(status: str = "") -> None:
         title = "XFEED Mosaic"
     sys.stdout.write(f"\033]0;{title}\007")
     sys.stdout.flush()
+
+
+def open_objectives_in_editor(keyboard: KeyboardListener, live) -> None:
+    """Open objectives.md in user's editor."""
+    import os
+    import subprocess
+    from xfeed.config import get_objectives_path
+
+    editor = os.environ.get("EDITOR", "nano")
+    objectives_path = get_objectives_path()
+
+    # Temporarily stop keyboard listener and live display for editor
+    keyboard.stop()
+    live.stop()
+
+    try:
+        subprocess.run([editor, str(objectives_path)])
+    finally:
+        # Restart keyboard listener and live display
+        keyboard.start()
+        live.start()
 
 
 def get_insight(vibes: list[TopicVibe], tweets: list[FilteredTweet]) -> str:
@@ -811,6 +857,8 @@ async def run_mosaic(
         engagement_stats=engagement_stats,
         refresh_callback=fetch_func,
         refresh_interval=refresh_minutes * 60,
+        threshold=threshold,
+        count=count,
     )
 
     last_refresh = time.time()
@@ -828,9 +876,9 @@ async def run_mosaic(
                     if key == 'q':
                         break
                     elif key == 'r':
-                        # Manual refresh
+                        # Manual refresh (uses current mosaic settings)
                         set_terminal_title("Refreshing...")
-                        result = await fetch_func(count, threshold)
+                        result = await fetch_func(mosaic.count, mosaic.threshold)
                         new_tweets, new_handle, new_profile, new_notifs = parse_fetch_result(result, my_handle)
                         new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
                         new_stats = compute_engagement_stats(
@@ -846,11 +894,27 @@ async def run_mosaic(
                         url = mosaic.get_url_for_shortcut(num)
                         if url:
                             webbrowser.open(url)
+                    elif key == '+' or key == '=':
+                        # Increase threshold (max 10)
+                        if mosaic.threshold < 10:
+                            mosaic.threshold += 1
+                            mosaic.refilter_tweets()
+                    elif key == '-':
+                        # Decrease threshold (min 0)
+                        if mosaic.threshold > 0:
+                            mosaic.threshold -= 1
+                            mosaic.refilter_tweets()
+                    elif key == 'c':
+                        # Cycle count
+                        mosaic.cycle_count()
+                    elif key == 'o':
+                        # Open objectives in editor
+                        open_objectives_in_editor(keyboard, live)
 
-                    # Auto refresh
+                    # Auto refresh (uses current mosaic settings)
                     if now - last_refresh >= refresh_minutes * 60:
                         set_terminal_title("Refreshing...")
-                        result = await fetch_func(count, threshold)
+                        result = await fetch_func(mosaic.count, mosaic.threshold)
                         new_tweets, new_handle, new_profile, new_notifs = parse_fetch_result(result, my_handle)
                         new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
                         new_stats = compute_engagement_stats(
