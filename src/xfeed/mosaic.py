@@ -62,6 +62,25 @@ class KeyboardListener:
             return None
 
 
+def normalize_emoji(emoji: str) -> tuple[str, int]:
+    """
+    Normalize emoji for consistent terminal display width.
+
+    Returns (normalized_emoji, display_width).
+
+    Handles:
+    - Variation selectors (U+FE0E text, U+FE0F emoji style)
+    - Most emojis render as 2 cells in terminals
+    - ZWJ sequences (👨‍👩‍👧) are kept intact but counted as 2 cells
+    """
+    # Strip variation selectors - they cause width miscalculation
+    normalized = emoji.replace("\ufe0e", "").replace("\ufe0f", "")
+
+    # Most emojis render as 2 cells in modern terminals
+    # This is a safe assumption for display purposes
+    return normalized, 2
+
+
 def get_block_style(score: int) -> tuple[str, str, str]:
     """Get block character, fg color, bg color based on score."""
     if score >= 9:
@@ -331,13 +350,15 @@ class VibeCard:
 
         body = Text("\n").join(lines)
 
-        # Build title - strip variation selectors from emoji for consistent width
-        # Variation selectors (U+FE0F) cause width miscalculation
-        emoji = v.emoji.replace("\ufe0f", "")
-        # Account for border chars: "╭─ " (3) + " ─╮" (3) = 6, plus emoji (2) + space (1)
-        title_max = self.width - 6
-        title_text = Text(f"{emoji} {v.topic}")
-        title_text.truncate(title_max, overflow="ellipsis")
+        # Build title with normalized emoji for consistent width
+        emoji, emoji_width = normalize_emoji(v.emoji)
+        # Account for border chars: "╭─ " (3) + " ─╮" (3) = 6
+        # Plus emoji (2 cells) + space (1) = 3 more
+        title_max = self.width - 6 - emoji_width - 1  # -1 for space after emoji
+        topic_text = Text(v.topic)
+        topic_text.truncate(title_max, overflow="ellipsis")
+        title_text = Text(f"{emoji} ")
+        title_text.append(topic_text)
 
         return Panel(
             body,
