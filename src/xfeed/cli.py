@@ -26,7 +26,7 @@ from xfeed.config import (
 )
 from xfeed.filter import filter_tweets
 from xfeed.models import FilteredTweet
-from xfeed.scraper import scrape_timeline
+from xfeed.scraper import scrape_timeline, scrape_all_engagement
 
 
 console = Console()
@@ -290,7 +290,8 @@ def ticker(rotate: int, refresh: int, count: int, threshold: int, compact: bool)
 @click.option("--refresh", "-r", default=5, help="Minutes between refresh (default: 5)")
 @click.option("--count", "-n", default=20, help="Tweets to fetch (default: 20)")
 @click.option("--threshold", "-t", default=5, help="Relevance threshold (default: 5)")
-def mosaic(refresh: int, count: int, threshold: int):
+@click.option("--engagement/--no-engagement", default=True, help="Scrape notifications for engagement data")
+def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
     """Block mosaic visualization - tweets sized by relevance.
 
     A visual heatmap where tweet tiles are sized and colored based on
@@ -309,18 +310,35 @@ def mosaic(refresh: int, count: int, threshold: int):
         sys.exit(1)
 
     async def fetch_filtered(count: int, threshold: int):
-        """Fetch and filter tweets. Returns (filtered_tweets, my_handle)."""
+        """Fetch and filter tweets with engagement data."""
         try:
-            tweets, my_handle = await scrape_timeline(count=count, headless=True)
-            if not tweets:
-                return [], my_handle
-            return filter_tweets(tweets, threshold=threshold), my_handle
+            if engagement:
+                # Scrape all three: home, profile, notifications
+                home_tweets, profile_tweets, notifications, my_handle = await scrape_all_engagement(
+                    home_count=count,
+                    profile_count=10,
+                    notifications_count=30,
+                    headless=True,
+                )
+                if not home_tweets:
+                    return [], my_handle, profile_tweets, notifications
+                filtered = filter_tweets(home_tweets, threshold=threshold)
+                return filtered, my_handle, profile_tweets, notifications
+            else:
+                # Just home timeline
+                tweets, my_handle = await scrape_timeline(count=count, headless=True)
+                if not tweets:
+                    return [], my_handle, [], []
+                return filter_tweets(tweets, threshold=threshold), my_handle, [], []
         except Exception as e:
             console.print(f"[red]Fetch error:[/red] {e}")
-            return [], None
+            return [], None, [], []
 
     console.print("[bold red]Starting XFEED Mosaic[/bold red]")
-    console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+ │ Count: {count}[/dim]")
+    if engagement:
+        console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+ │ Engagement tracking ON[/dim]")
+    else:
+        console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+ │ Count: {count}[/dim]")
     console.print("[dim][1-9] open tweet │ [r]efresh │ [q]uit[/dim]\n")
 
     asyncio.run(run_mosaic(

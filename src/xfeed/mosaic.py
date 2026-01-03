@@ -18,7 +18,7 @@ from rich.table import Table
 from rich.align import Align
 from rich import box
 
-from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats
+from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats, Notification, NotificationType
 
 
 class KeyboardListener:
@@ -373,11 +373,37 @@ class VibeCard:
 
 
 class EngagementCard:
-    """A card displaying user's engagement stats."""
+    """A card displaying user's engagement stats with notifications."""
 
-    def __init__(self, stats: MyEngagementStats, width: int = 50):
+    def __init__(self, stats: MyEngagementStats, width: int = 60):
         self.stats = stats
         self.width = width
+
+    def _format_notification(self, n: Notification) -> Text:
+        """Format a single notification for display."""
+        line = Text()
+
+        # Icon based on type
+        icons = {
+            NotificationType.LIKE: ("♥", "red"),
+            NotificationType.RETWEET: ("↻", "green"),
+            NotificationType.REPLY: ("💬", "blue"),
+            NotificationType.FOLLOW: ("+", "cyan"),
+            NotificationType.QUOTE: ("❝", "yellow"),
+            NotificationType.MENTION: ("@", "magenta"),
+        }
+        icon, color = icons.get(n.type, ("•", "dim"))
+        line.append(f"  {icon} ", style=color)
+
+        # Actor
+        line.append(n.actor_handle, style="cyan")
+        if n.additional_count > 0:
+            line.append(f" +{n.additional_count}", style="dim")
+
+        # Time
+        line.append(f" ({n.formatted_time})", style="dim")
+
+        return line
 
     def render(self) -> Panel:
         s = self.stats
@@ -385,49 +411,81 @@ class EngagementCard:
 
         lines = []
 
-        # Header with user handle
-        header = Text()
-        header.append("👤 ", style="bold")
-        header.append("MY ENGAGEMENT", style="bold bright_cyan")
-        if s.my_handle:
-            header.append(f" ({s.my_handle})", style="dim")
-        lines.append(header)
+        # 24h Stats Row (if we have notification data)
+        if s.likes_last_24h or s.retweets_last_24h or s.new_followers_last_24h:
+            stats_24h = Text()
+            stats_24h.append("Last 24h: ", style="dim")
+            stats_24h.append(f"+{s.likes_last_24h} ♥", style="red")
+            stats_24h.append(f"  +{s.retweets_last_24h} ↻", style="green")
+            stats_24h.append(f"  +{s.replies_last_24h} 💬", style="blue")
+            if s.new_followers_last_24h:
+                stats_24h.append(f"  +{s.new_followers_last_24h} followers", style="cyan")
+            lines.append(stats_24h)
 
-        # My tweets stats
-        if s.my_tweets_count > 0:
-            my_line = Text()
-            my_line.append(f"Your tweets: {s.my_tweets_count}", style="bright_green")
-            my_line.append("  │  ", style="dim")
-            my_line.append(f"+{s.total_likes_received} ♥", style="red")
-            my_line.append(f"  +{s.total_retweets_received} ↻", style="green")
-            my_line.append(f"  +{s.total_replies_received} 💬", style="blue")
-            lines.append(my_line)
-        else:
-            lines.append(Text("No tweets from you in feed", style="dim"))
+        # Top engagers (if available)
+        if s.top_likers:
+            likers = Text()
+            likers.append("Top likers: ", style="dim")
+            handles = [h for h, _ in s.top_likers[:3]]
+            likers.append(", ".join(handles), style="cyan")
+            lines.append(likers)
 
-        # Engagement I gave
-        eng_line = Text()
-        eng_line.append(f"You liked: {s.tweets_i_liked_count}", style="red")
-        eng_line.append("  │  ", style="dim")
-        eng_line.append(f"You RT'd: {s.tweets_i_retweeted_count}", style="green")
-        lines.append(eng_line)
+        # Recent notifications
+        if s.recent_notifications:
+            lines.append(Text(""))
+            lines.append(Text("Recent:", style="dim"))
+            for n in s.recent_notifications[:4]:
+                lines.append(self._format_notification(n))
+
+        # Fallback to old display if no notification data
+        if not lines:
+            # My tweets stats
+            if s.my_tweets_count > 0:
+                my_line = Text()
+                my_line.append(f"Your tweets: {s.my_tweets_count}", style="bright_green")
+                my_line.append("  │  ", style="dim")
+                my_line.append(f"+{s.total_likes_received} ♥", style="red")
+                my_line.append(f"  +{s.total_retweets_received} ↻", style="green")
+                lines.append(my_line)
+            else:
+                lines.append(Text("No engagement data yet", style="dim"))
 
         body = Text("\n").join(lines)
 
+        # Build title
+        title = Text()
+        title.append("YOUR ENGAGEMENT", style="bold bright_cyan")
+        if s.my_handle and s.my_handle != "unknown":
+            title.append(f" ({s.my_handle})", style="dim")
+
+        # Dynamic height based on content
+        height = min(len(lines) + 2, 10)
+
         return Panel(
             body,
+            title=title,
+            title_align="left",
             box=box.ROUNDED,
             border_style="bright_cyan",
             width=self.width,
-            height=5,
+            height=height,
             padding=(0, 1),
         )
 
 
-def compute_engagement_stats(tweets: list[FilteredTweet], my_handle: str | None) -> MyEngagementStats:
-    """Compute engagement statistics from filtered tweets."""
+def compute_engagement_stats(
+    tweets: list[FilteredTweet],
+    my_handle: str | None,
+    notifications: list[Notification] | None = None,
+    profile_tweets: list | None = None,  # list[Tweet]
+) -> MyEngagementStats:
+    """Compute engagement statistics from tweets and notifications."""
+    from collections import Counter
+    from datetime import timedelta
+
     stats = MyEngagementStats(my_handle=my_handle or "unknown")
 
+    # Process home feed tweets
     for ft in tweets:
         t = ft.tweet
         if t.is_by_me:
@@ -439,6 +497,36 @@ def compute_engagement_stats(tweets: list[FilteredTweet], my_handle: str | None)
             stats.tweets_i_liked_count += 1
         if t.is_retweeted_by_me:
             stats.tweets_i_retweeted_count += 1
+
+    # Process profile tweets
+    if profile_tweets:
+        stats.profile_tweets = profile_tweets
+
+    # Process notifications
+    if notifications:
+        stats.recent_notifications = notifications[:10]  # Keep top 10
+
+        cutoff = datetime.now() - timedelta(hours=24)
+        liker_counts: Counter = Counter()
+        retweeter_counts: Counter = Counter()
+
+        for n in notifications:
+            # Count engagement in last 24h
+            if n.timestamp > cutoff:
+                if n.type == NotificationType.LIKE:
+                    stats.likes_last_24h += n.total_actors
+                    liker_counts[n.actor_handle] += 1
+                elif n.type == NotificationType.RETWEET:
+                    stats.retweets_last_24h += n.total_actors
+                    retweeter_counts[n.actor_handle] += 1
+                elif n.type == NotificationType.REPLY:
+                    stats.replies_last_24h += n.total_actors
+                elif n.type == NotificationType.FOLLOW:
+                    stats.new_followers_last_24h += n.total_actors
+
+        # Top engagers
+        stats.top_likers = liker_counts.most_common(5)
+        stats.top_retweeters = retweeter_counts.most_common(5)
 
     return stats
 
@@ -673,6 +761,17 @@ def get_insight(vibes: list[TopicVibe], tweets: list[FilteredTweet]) -> str:
     return "No tweets"
 
 
+def parse_fetch_result(result, default_handle=None):
+    """Parse fetch result which can be 2-tuple or 4-tuple."""
+    if not isinstance(result, tuple):
+        return result, default_handle, [], []
+    if len(result) == 2:
+        return result[0], result[1], [], []
+    if len(result) == 4:
+        return result
+    return result[0], default_handle, [], []
+
+
 async def run_mosaic(
     fetch_func,
     vibe_func=None,
@@ -686,8 +785,7 @@ async def run_mosaic(
     set_terminal_title("Loading...")
     console.print("[dim]Fetching tweets for mosaic...[/dim]")
     result = await fetch_func(count, threshold)
-    # fetch_func returns (tweets, my_handle) tuple
-    tweets, my_handle = result if isinstance(result, tuple) else (result, None)
+    tweets, my_handle, profile_tweets, notifications = parse_fetch_result(result)
 
     vibes = []
     if tweets and vibe_func:
@@ -695,8 +793,10 @@ async def run_mosaic(
         console.print("[dim]Analyzing vibe of the day...[/dim]")
         vibes = vibe_func(tweets)
 
-    # Compute engagement stats
-    engagement_stats = compute_engagement_stats(tweets, my_handle) if tweets else None
+    # Compute engagement stats with notifications
+    engagement_stats = compute_engagement_stats(
+        tweets, my_handle, notifications, profile_tweets
+    ) if tweets else None
 
     if not tweets:
         console.print("[yellow]No tweets found. Will retry on refresh.[/yellow]")
@@ -730,9 +830,11 @@ async def run_mosaic(
                         # Manual refresh
                         set_terminal_title("Refreshing...")
                         result = await fetch_func(count, threshold)
-                        new_tweets, new_handle = result if isinstance(result, tuple) else (result, my_handle)
+                        new_tweets, new_handle, new_profile, new_notifs = parse_fetch_result(result, my_handle)
                         new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
-                        new_stats = compute_engagement_stats(new_tweets, new_handle) if new_tweets else None
+                        new_stats = compute_engagement_stats(
+                            new_tweets, new_handle, new_notifs, new_profile
+                        ) if new_tweets else None
                         if new_tweets:
                             mosaic.update_tweets(new_tweets, new_vibes, new_stats)
                             set_terminal_title(get_insight(new_vibes, new_tweets))
@@ -748,9 +850,11 @@ async def run_mosaic(
                     if now - last_refresh >= refresh_minutes * 60:
                         set_terminal_title("Refreshing...")
                         result = await fetch_func(count, threshold)
-                        new_tweets, new_handle = result if isinstance(result, tuple) else (result, my_handle)
+                        new_tweets, new_handle, new_profile, new_notifs = parse_fetch_result(result, my_handle)
                         new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
-                        new_stats = compute_engagement_stats(new_tweets, new_handle) if new_tweets else None
+                        new_stats = compute_engagement_stats(
+                            new_tweets, new_handle, new_notifs, new_profile
+                        ) if new_tweets else None
                         if new_tweets:
                             mosaic.update_tweets(new_tweets, new_vibes, new_stats)
                             set_terminal_title(get_insight(new_vibes, new_tweets))

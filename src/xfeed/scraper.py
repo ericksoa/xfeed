@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import browser_cookie3
 from playwright.async_api import async_playwright, Page
 
-from xfeed.models import Tweet, QuotedTweet
+from xfeed.models import Tweet, QuotedTweet, Notification, NotificationType
 
 
 # Selectors for X's DOM - these may need updating if X changes their structure
@@ -341,3 +341,377 @@ async def scrape_timeline(
         await browser.close()
 
     return list(tweets.values())[:count], my_handle
+
+
+def parse_notification_text(text: str) -> tuple[NotificationType, list[str], int]:
+    """
+    Parse notification text to extract type and actors.
+
+    Returns:
+        (notification_type, actor_names, additional_count)
+    """
+    text_lower = text.lower()
+
+    # Determine notification type
+    if "liked your" in text_lower:
+        notif_type = NotificationType.LIKE
+    elif "retweeted your" in text_lower or "reposted your" in text_lower:
+        notif_type = NotificationType.RETWEET
+    elif "replied to" in text_lower:
+        notif_type = NotificationType.REPLY
+    elif "quoted your" in text_lower:
+        notif_type = NotificationType.QUOTE
+    elif "followed you" in text_lower:
+        notif_type = NotificationType.FOLLOW
+    elif "mentioned you" in text_lower:
+        notif_type = NotificationType.MENTION
+    else:
+        notif_type = NotificationType.UNKNOWN
+
+    # Parse "and N others" pattern
+    additional_count = 0
+    others_match = re.search(r"and (\d+) others?", text_lower)
+    if others_match:
+        additional_count = int(others_match.group(1))
+
+    return notif_type, [], additional_count
+
+
+async def extract_notification_data(article, page: Page) -> Notification | None:
+    """Extract notification data from an article element."""
+    try:
+        # Get the full text
+        text = await article.inner_text()
+        if not text:
+            return None
+
+        # Parse notification type and additional count
+        notif_type, _, additional_count = parse_notification_text(text)
+        if notif_type == NotificationType.UNKNOWN:
+            return None
+
+        # Get user links (actors who performed the action)
+        links = await article.query_selector_all('a[role="link"]')
+        actor_handle = "@unknown"
+        actor_name = "Unknown"
+        additional_actors = []
+
+        for link in links:
+            href = await link.get_attribute("href") or ""
+            # Skip non-user links (like status links)
+            if href.startswith("/") and "/status/" not in href and len(href) > 1:
+                link_text = await link.inner_text()
+                handle = f"@{href.strip('/')}"
+
+                if actor_handle == "@unknown":
+                    actor_handle = handle
+                    actor_name = link_text.strip()
+                else:
+                    additional_actors.append(handle)
+
+        # Get timestamp
+        time_elem = await article.query_selector("time")
+        if time_elem:
+            time_str = await time_elem.get_attribute("datetime")
+            if time_str:
+                timestamp = datetime.fromisoformat(time_str.replace("Z", "+00:00")).replace(tzinfo=None)
+            else:
+                time_text = await time_elem.inner_text()
+                timestamp = parse_relative_time(time_text)
+        else:
+            timestamp = datetime.now()
+
+        # Get tweet preview if available (truncated content)
+        tweet_preview = None
+        # The notification text often contains the tweet content after the action description
+        lines = text.split("\n")
+        for line in lines[1:]:  # Skip first line which is the notification
+            line = line.strip()
+            if len(line) > 20 and not line.endswith("..."):
+                tweet_preview = line[:100]
+                break
+
+        return Notification(
+            type=notif_type,
+            actor_handle=actor_handle,
+            actor_name=actor_name,
+            timestamp=timestamp,
+            additional_actors=additional_actors[:5],  # Limit to 5
+            additional_count=additional_count,
+            target_tweet_preview=tweet_preview,
+        )
+    except Exception:
+        return None
+
+
+async def scrape_notifications(
+    count: int = 50,
+    headless: bool = True,
+    on_progress: callable = None,
+) -> list[Notification]:
+    """
+    Scrape notifications from the X notifications page.
+
+    Args:
+        count: Number of notifications to fetch
+        headless: Run browser in headless mode
+        on_progress: Callback function for progress updates
+
+    Returns:
+        List of Notification objects
+    """
+    notifications: list[Notification] = []
+
+    cookies = get_x_cookies_from_chrome()
+    if not cookies:
+        raise RuntimeError("No X cookies found in Chrome.")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        )
+        await context.add_cookies(cookies)
+        page = await context.new_page()
+
+        await page.goto("https://x.com/notifications")
+        await page.wait_for_timeout(3000)
+
+        # Check if logged in
+        if "/login" in page.url:
+            await browser.close()
+            raise RuntimeError("Not logged in to X.")
+
+        # Scroll and collect notifications
+        scroll_count = 0
+        max_scrolls = count // 5 + 5
+        seen_ids = set()
+
+        while len(notifications) < count and scroll_count < max_scrolls:
+            articles = await page.query_selector_all("article")
+
+            for article in articles:
+                if len(notifications) >= count:
+                    break
+
+                # Use inner text as a simple dedup key
+                text = await article.inner_text()
+                text_key = text[:100] if text else ""
+                if text_key in seen_ids:
+                    continue
+                seen_ids.add(text_key)
+
+                notif = await extract_notification_data(article, page)
+                if notif:
+                    notifications.append(notif)
+                    if on_progress:
+                        on_progress(len(notifications), count)
+
+            await page.evaluate("window.scrollBy(0, window.innerHeight)")
+            await page.wait_for_timeout(1000)
+            scroll_count += 1
+
+        await browser.close()
+
+    return notifications[:count]
+
+
+async def scrape_profile_timeline(
+    username: str,
+    count: int = 20,
+    headless: bool = True,
+    on_progress: callable = None,
+) -> list[Tweet]:
+    """
+    Scrape tweets from a user's profile timeline.
+
+    Args:
+        username: The username to scrape (without @)
+        count: Number of tweets to fetch
+        headless: Run browser in headless mode
+        on_progress: Callback function for progress updates
+
+    Returns:
+        List of Tweet objects from the user's profile
+    """
+    tweets: dict[str, Tweet] = {}
+    username = username.lstrip("@")
+
+    cookies = get_x_cookies_from_chrome()
+    if not cookies:
+        raise RuntimeError("No X cookies found in Chrome.")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        )
+        await context.add_cookies(cookies)
+        page = await context.new_page()
+
+        await page.goto(f"https://x.com/{username}")
+        await page.wait_for_timeout(3000)
+
+        # Check if logged in
+        if "/login" in page.url:
+            await browser.close()
+            raise RuntimeError("Not logged in to X.")
+
+        my_handle = f"@{username}"
+
+        # Scroll and collect tweets
+        scroll_count = 0
+        max_scrolls = count // 5 + 5
+
+        while len(tweets) < count and scroll_count < max_scrolls:
+            articles = await page.query_selector_all(TWEET_SELECTOR)
+
+            for article in articles:
+                if len(tweets) >= count:
+                    break
+
+                tweet = await extract_tweet_data(article, page, my_handle)
+                # Only include tweets by this user (not retweets or replies shown on profile)
+                if tweet and tweet.id not in tweets and tweet.author_handle.lower() == my_handle.lower():
+                    tweets[tweet.id] = tweet
+
+                    if on_progress:
+                        on_progress(len(tweets), count)
+
+            await page.evaluate("window.scrollBy(0, window.innerHeight)")
+            await page.wait_for_timeout(1500)
+            scroll_count += 1
+
+        await browser.close()
+
+    return list(tweets.values())[:count]
+
+
+async def scrape_all_engagement(
+    home_count: int = 20,
+    profile_count: int = 10,
+    notifications_count: int = 30,
+    headless: bool = True,
+    on_progress: callable = None,
+) -> tuple[list[Tweet], list[Tweet], list[Notification], str | None]:
+    """
+    Scrape home timeline, profile timeline, and notifications in a single session.
+
+    Returns:
+        (home_tweets, profile_tweets, notifications, my_handle)
+    """
+    home_tweets: dict[str, Tweet] = {}
+    profile_tweets: dict[str, Tweet] = {}
+    notifications: list[Notification] = []
+    my_handle: str | None = None
+
+    cookies = get_x_cookies_from_chrome()
+    if not cookies:
+        raise RuntimeError("No X cookies found in Chrome.")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        )
+        await context.add_cookies(cookies)
+        page = await context.new_page()
+
+        # 1. Scrape home timeline
+        if on_progress:
+            on_progress("home", 0, home_count)
+
+        await page.goto("https://x.com/home")
+        await page.wait_for_timeout(3000)
+
+        if "/login" in page.url:
+            await browser.close()
+            raise RuntimeError("Not logged in to X.")
+
+        my_handle = await get_logged_in_user(page)
+
+        scroll_count = 0
+        while len(home_tweets) < home_count and scroll_count < home_count // 5 + 5:
+            articles = await page.query_selector_all(TWEET_SELECTOR)
+            for article in articles:
+                if len(home_tweets) >= home_count:
+                    break
+                tweet = await extract_tweet_data(article, page, my_handle)
+                if tweet and tweet.id not in home_tweets:
+                    home_tweets[tweet.id] = tweet
+                    if on_progress:
+                        on_progress("home", len(home_tweets), home_count)
+
+            await page.evaluate("window.scrollBy(0, window.innerHeight)")
+            await page.wait_for_timeout(1500)
+            scroll_count += 1
+
+        # 2. Scrape profile timeline
+        if my_handle and profile_count > 0:
+            if on_progress:
+                on_progress("profile", 0, profile_count)
+
+            username = my_handle.lstrip("@")
+            await page.goto(f"https://x.com/{username}")
+            await page.wait_for_timeout(3000)
+
+            scroll_count = 0
+            while len(profile_tweets) < profile_count and scroll_count < profile_count // 5 + 5:
+                articles = await page.query_selector_all(TWEET_SELECTOR)
+                for article in articles:
+                    if len(profile_tweets) >= profile_count:
+                        break
+                    tweet = await extract_tweet_data(article, page, my_handle)
+                    if tweet and tweet.id not in profile_tweets:
+                        if tweet.author_handle.lower() == my_handle.lower():
+                            profile_tweets[tweet.id] = tweet
+                            if on_progress:
+                                on_progress("profile", len(profile_tweets), profile_count)
+
+                await page.evaluate("window.scrollBy(0, window.innerHeight)")
+                await page.wait_for_timeout(1500)
+                scroll_count += 1
+
+        # 3. Scrape notifications
+        if notifications_count > 0:
+            if on_progress:
+                on_progress("notifications", 0, notifications_count)
+
+            await page.goto("https://x.com/notifications")
+            await page.wait_for_timeout(3000)
+
+            scroll_count = 0
+            seen_ids = set()
+            while len(notifications) < notifications_count and scroll_count < notifications_count // 5 + 5:
+                articles = await page.query_selector_all("article")
+                for article in articles:
+                    if len(notifications) >= notifications_count:
+                        break
+
+                    text = await article.inner_text()
+                    text_key = text[:100] if text else ""
+                    if text_key in seen_ids:
+                        continue
+                    seen_ids.add(text_key)
+
+                    notif = await extract_notification_data(article, page)
+                    if notif:
+                        notifications.append(notif)
+                        if on_progress:
+                            on_progress("notifications", len(notifications), notifications_count)
+
+                await page.evaluate("window.scrollBy(0, window.innerHeight)")
+                await page.wait_for_timeout(1000)
+                scroll_count += 1
+
+        await browser.close()
+
+    return (
+        list(home_tweets.values())[:home_count],
+        list(profile_tweets.values())[:profile_count],
+        notifications[:notifications_count],
+        my_handle,
+    )

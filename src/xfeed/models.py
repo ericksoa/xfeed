@@ -2,6 +2,18 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
+
+
+class NotificationType(Enum):
+    """Types of notifications from X."""
+    LIKE = "like"
+    RETWEET = "retweet"
+    REPLY = "reply"
+    QUOTE = "quote"
+    FOLLOW = "follow"
+    MENTION = "mention"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -71,6 +83,39 @@ class TopicVibe:
 
 
 @dataclass
+class Notification:
+    """Represents a notification from the notifications page."""
+
+    type: NotificationType
+    actor_handle: str  # @user who performed the action
+    actor_name: str  # Display name
+    timestamp: datetime
+    additional_actors: list[str] = field(default_factory=list)  # Other actors in grouped notifs
+    additional_count: int = 0  # "and N others"
+    target_tweet_preview: str | None = None  # Preview of the tweet that was engaged with
+
+    @property
+    def total_actors(self) -> int:
+        """Total number of actors including additional ones."""
+        return 1 + len(self.additional_actors) + self.additional_count
+
+    @property
+    def formatted_time(self) -> str:
+        """Return human-readable time difference."""
+        now = datetime.now()
+        diff = now - self.timestamp
+
+        if diff.days > 0:
+            return f"{diff.days}d ago"
+        elif diff.seconds >= 3600:
+            return f"{diff.seconds // 3600}h ago"
+        elif diff.seconds >= 60:
+            return f"{diff.seconds // 60}m ago"
+        else:
+            return "just now"
+
+
+@dataclass
 class MyEngagementStats:
     """Statistics about the user's engagement in the current feed."""
 
@@ -81,3 +126,17 @@ class MyEngagementStats:
     total_replies_received: int = 0
     tweets_i_liked_count: int = 0
     tweets_i_retweeted_count: int = 0
+
+    # From profile timeline
+    profile_tweets: list = field(default_factory=list)  # list[Tweet]
+
+    # From notifications
+    recent_notifications: list = field(default_factory=list)  # list[Notification]
+    likes_last_24h: int = 0
+    retweets_last_24h: int = 0
+    replies_last_24h: int = 0
+    new_followers_last_24h: int = 0
+
+    # Top engagers
+    top_likers: list = field(default_factory=list)  # list[tuple[str, int]]
+    top_retweeters: list = field(default_factory=list)  # list[tuple[str, int]]
