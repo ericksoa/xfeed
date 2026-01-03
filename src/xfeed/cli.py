@@ -5,12 +5,15 @@ import json
 import os
 import subprocess
 import sys
+import time
+from datetime import datetime
 
 import click
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
+from rich.text import Text
 
 from xfeed.config import (
     get_api_key,
@@ -245,7 +248,8 @@ def objectives(edit: bool, show: bool):
 @click.option("--refresh", "-R", default=5, help="Minutes between feed refresh (default: 5)")
 @click.option("--count", "-n", default=20, help="Tweets to fetch per refresh (default: 20)")
 @click.option("--threshold", "-t", default=7, help="Relevance threshold (default: 7)")
-def ticker(rotate: int, refresh: int, count: int, threshold: int):
+@click.option("--compact", "-c", is_flag=True, help="Compact 2-line display mode")
+def ticker(rotate: int, refresh: int, count: int, threshold: int, compact: bool):
     """CNN-style rotating ticker display of filtered tweets."""
     from xfeed.ticker import run_ticker
 
@@ -267,9 +271,10 @@ def ticker(rotate: int, refresh: int, count: int, threshold: int):
             console.print(f"[red]Fetch error:[/red] {e}")
             return []
 
-    console.print(f"[bold blue]Starting X Feed Ticker[/bold blue]")
-    console.print(f"[dim]Rotate: {rotate}s │ Refresh: {refresh}min │ Threshold: {threshold}/10[/dim]")
-    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+    if not compact:
+        console.print(f"[bold blue]Starting X Feed Ticker[/bold blue]")
+        console.print(f"[dim]Rotate: {rotate}s │ Refresh: {refresh}min │ Threshold: {threshold}/10[/dim]")
+        console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
     asyncio.run(run_ticker(
         fetch_func=fetch_filtered,
@@ -277,7 +282,130 @@ def ticker(rotate: int, refresh: int, count: int, threshold: int):
         refresh_minutes=refresh,
         count=count,
         threshold=threshold,
+        compact=compact,
     ))
+
+
+@main.command()
+@click.option("--refresh", "-r", default=5, help="Minutes between refresh (default: 5)")
+@click.option("--count", "-n", default=20, help="Tweets to fetch (default: 20)")
+@click.option("--threshold", "-t", default=5, help="Relevance threshold (default: 5)")
+def mosaic(refresh: int, count: int, threshold: int):
+    """Block mosaic visualization - tweets sized by relevance.
+
+    A visual heatmap where tweet tiles are sized and colored based on
+    their relevance score. High-relevance tweets appear as large, bold
+    blocks while lower-relevance ones are smaller and dimmer.
+    """
+    from xfeed.mosaic import run_mosaic
+
+    if not get_api_key():
+        console.print(
+            "[red]Error:[/red] Anthropic API key not configured.\n"
+            "Add ANTHROPIC_API_KEY to .env file in the project directory."
+        )
+        sys.exit(1)
+
+    async def fetch_filtered(count: int, threshold: int):
+        """Fetch and filter tweets."""
+        try:
+            tweets = await scrape_timeline(count=count, headless=True)
+            if not tweets:
+                return []
+            return filter_tweets(tweets, threshold=threshold)
+        except Exception as e:
+            console.print(f"[red]Fetch error:[/red] {e}")
+            return []
+
+    console.print("[bold red]Starting XFEED Mosaic[/bold red]")
+    console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+ │ Count: {count}[/dim]")
+    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    asyncio.run(run_mosaic(
+        fetch_func=fetch_filtered,
+        refresh_minutes=refresh,
+        count=count,
+        threshold=threshold,
+    ))
+
+
+@main.command()
+@click.option("--interval", "-i", default=5, help="Minutes between updates (default: 5)")
+@click.option("--count", "-n", default=10, help="Tweets to fetch per update (default: 10)")
+@click.option("--threshold", "-t", default=8, help="Relevance threshold (default: 8)")
+@click.option("--top", default=3, help="Number of top tweets to show (default: 3)")
+def watch(interval: int, count: int, threshold: int, top: int):
+    """Background watcher that periodically prints top tweets.
+
+    Designed to run alongside Claude Code, printing distinctly-colored
+    updates every few minutes for ambient awareness.
+    """
+    if not get_api_key():
+        console.print(
+            "[red]Error:[/red] Anthropic API key not configured.\n"
+            "Add ANTHROPIC_API_KEY to .env file in the project directory."
+        )
+        sys.exit(1)
+
+    def print_update(tweets: list) -> None:
+        """Print a compact, distinctly-colored update."""
+        now = datetime.now().strftime("%H:%M")
+
+        # Distinct header with magenta styling
+        header = Text()
+        header.append(f"━━━ ", style="magenta dim")
+        header.append("XFEED", style="bold magenta")
+        header.append(f" {now} ", style="magenta dim")
+        header.append("━" * 40, style="magenta dim")
+        console.print(header)
+
+        if not tweets:
+            console.print("[magenta dim]  No relevant tweets found[/magenta dim]")
+        else:
+            for ft in tweets[:top]:
+                tweet = ft.tweet
+                score = ft.relevance_score
+
+                # Compact one-line format per tweet
+                line = Text()
+                line.append(f"  [{score}] ", style="magenta bold")
+                line.append(f"{tweet.author_handle}", style="cyan")
+                line.append(": ", style="dim")
+
+                # Truncate content to fit
+                content = tweet.content.replace("\n", " ")
+                if len(content) > 80:
+                    content = content[:77] + "..."
+                line.append(content, style="white")
+
+                console.print(line)
+
+        # Footer
+        console.print(Text(f"━" * 60, style="magenta dim"))
+        console.print()
+
+    async def fetch_and_print():
+        """Fetch tweets and print update."""
+        try:
+            tweets = await scrape_timeline(count=count, headless=True)
+            if tweets:
+                filtered = filter_tweets(tweets, threshold=threshold)
+                print_update(filtered)
+            else:
+                print_update([])
+        except Exception as e:
+            console.print(f"[magenta dim]━━━ XFEED error: {e} ━━━[/magenta dim]")
+
+    # Initial fetch
+    console.print(f"[magenta]XFEED watch started[/magenta] [dim](every {interval}min, threshold {threshold}+)[/dim]")
+    console.print()
+
+    try:
+        while True:
+            asyncio.run(fetch_and_print())
+            time.sleep(interval * 60)
+    except KeyboardInterrupt:
+        console.print("\n[magenta dim]XFEED watch stopped[/magenta dim]")
 
 
 if __name__ == "__main__":

@@ -52,6 +52,7 @@ class TickerDisplay:
         tweets: list[FilteredTweet],
         rotate_seconds: int = 5,
         refresh_minutes: int = 5,
+        compact: bool = False,
     ):
         self.tweets = tweets
         self.current_index = 0
@@ -60,6 +61,7 @@ class TickerDisplay:
         self.last_refresh = datetime.now()
         self.console = Console()
         self.transition_phase = 0  # 0 = normal, 1-3 = transitioning
+        self.compact = compact
 
     def get_score_style(self, score: int) -> Style:
         """Get color style based on relevance score."""
@@ -149,8 +151,58 @@ class TickerDisplay:
         header.append("═" * 20, style="blue")
         return header
 
+    def render_compact(self, elapsed: float) -> Group:
+        """Render a compact 2-line display."""
+        if not self.tweets:
+            return Group(
+                Text("X FEED | No tweets found...", style="dim"),
+                Text("", style="dim"),
+            )
+
+        ft = self.tweets[self.current_index]
+        tweet = ft.tweet
+        score = ft.relevance_score
+
+        # Calculate opacity for transition effect
+        if elapsed > self.rotate_seconds - 0.3:
+            opacity = max(0.3, (self.rotate_seconds - elapsed) / 0.3)
+        elif elapsed < 0.3:
+            opacity = min(1.0, 0.3 + elapsed / 0.3 * 0.7)
+        else:
+            opacity = 1.0
+
+        dim = opacity < 0.5
+
+        # Line 1: @author: tweet content (truncated to fit)
+        line1 = Text()
+        line1.append(f"{tweet.author_handle}", style="bold cyan" if not dim else "dim")
+        line1.append(": ", style="dim")
+        # Leave room for author handle, truncate content
+        max_content = 100 - len(tweet.author_handle)
+        content = tweet.content.replace("\n", " ")
+        if len(content) > max_content:
+            content = content[:max_content - 3] + "..."
+        line1.append(content, style="" if not dim else "dim")
+
+        # Line 2: score + engagement + progress
+        line2 = Text()
+        score_style = self.get_score_style(score) if not dim else Style(dim=True)
+        line2.append(f"[{score}/10]", style=score_style)
+
+        engagement = format_engagement(tweet.likes, tweet.retweets)
+        if engagement:
+            line2.append(f"  {engagement}", style="dim")
+
+        progress = create_progress_bar(elapsed, self.rotate_seconds, width=8)
+        line2.append(f"  {progress}", style="cyan" if not dim else "dim")
+
+        return Group(line1, line2)
+
     def render(self, elapsed: float) -> Group:
         """Render the complete ticker display."""
+        if self.compact:
+            return self.render_compact(elapsed)
+
         if not self.tweets:
             return Group(
                 self.render_header(),
@@ -194,6 +246,7 @@ async def run_ticker(
     refresh_minutes: int = 5,
     count: int = 20,
     threshold: int = 7,
+    compact: bool = False,
 ):
     """
     Run the ticker display with periodic refresh.
@@ -204,6 +257,7 @@ async def run_ticker(
         refresh_minutes: Minutes between feed refresh
         count: Number of tweets to fetch
         threshold: Relevance threshold
+        compact: Use compact 2-line display mode
     """
     console = Console()
 
@@ -214,7 +268,7 @@ async def run_ticker(
     if not tweets:
         console.print("[yellow]No relevant tweets found. Will retry on refresh.[/yellow]")
 
-    ticker = TickerDisplay(tweets, rotate_seconds, refresh_minutes)
+    ticker = TickerDisplay(tweets, rotate_seconds, refresh_minutes, compact=compact)
 
     last_rotate = time.time()
     last_refresh = time.time()
