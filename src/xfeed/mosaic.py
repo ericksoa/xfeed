@@ -5,6 +5,7 @@ import sys
 import termios
 import time
 import tty
+import webbrowser
 from datetime import datetime
 from threading import Thread
 from queue import Queue, Empty
@@ -128,13 +129,14 @@ class MosaicTile:
 
     PAGE_DURATION = 3.0
 
-    def __init__(self, tweet: FilteredTweet, width: int, tile_id: int = 0):
+    def __init__(self, tweet: FilteredTweet, width: int, tile_id: int = 0, shortcut_num: int | None = None):
         self.tweet = tweet
         self.width = width
         self.score = tweet.relevance_score
         self.is_superdunk = tweet.is_superdunk
         self.height = get_tile_height(self.score)
         self.tile_id = tile_id
+        self.shortcut_num = shortcut_num  # 1-9 for keyboard shortcut, None if no shortcut
 
         content_width = self.width - 6
         content_lines = max(1, self.height - 2)
@@ -191,10 +193,12 @@ class MosaicTile:
             available_content = max(1, self.height - 2)
             lines = []
             header = Text()
+            if self.shortcut_num:
+                header.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
             if self.is_superdunk:
                 header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
-            header.append(truncate(t.author_handle, 20), style="bold cyan")
+            header.append(truncate(t.author_handle, 18), style="bold cyan")
             header.append(f" · {t.formatted_time}", style="dim")
             if page_indicator:
                 header.append(page_indicator, style="dim magenta")
@@ -219,10 +223,12 @@ class MosaicTile:
             available_content = max(1, self.height - 1)
             lines = []
             header = Text()
+            if self.shortcut_num:
+                header.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
             if self.is_superdunk:
                 header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
-            header.append(truncate(t.author_handle, 15), style="cyan")
+            header.append(truncate(t.author_handle, 12), style="cyan")
             if page_indicator:
                 header.append(page_indicator, style="dim magenta")
             lines.append(header)
@@ -238,8 +244,10 @@ class MosaicTile:
         elif self.height >= 2:
             available_content = max(1, self.height - 1)
             header = Text()
+            if self.shortcut_num:
+                header.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
-            header.append(truncate(t.author_handle, 12), style="cyan")
+            header.append(truncate(t.author_handle, 10), style="cyan")
             if page_indicator:
                 header.append(page_indicator, style="dim magenta")
 
@@ -251,8 +259,10 @@ class MosaicTile:
 
         else:
             body = Text()
+            if self.shortcut_num:
+                body.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
             body.append(f"[{self.score}] ", style=f"{fg}")
-            body.append(truncate(t.author_handle, content_width - 5), style="dim cyan")
+            body.append(truncate(t.author_handle, content_width - 8), style="dim cyan")
 
         return Panel(
             body,
@@ -328,11 +338,28 @@ class MosaicDisplay:
         self.refresh_callback = refresh_callback
         self.refresh_interval = refresh_interval
         self.last_refresh = time.time()
+        self.url_shortcuts: dict[int, str] = {}  # Maps 1-9 to tweet URLs
 
     def create_tiles(self) -> list[MosaicTile]:
-        """Create tiles for tweets."""
+        """Create tiles for tweets with shortcut numbers."""
         tiles = []
         width = self.console.width
+        self.url_shortcuts = {}
+
+        # Assign shortcuts in display order: large, medium, small
+        large = [t for t in self.tweets if t.relevance_score >= 9][:3]
+        medium = [t for t in self.tweets if 7 <= t.relevance_score < 9][:6]
+        small = [t for t in self.tweets if t.relevance_score < 7][:9]
+
+        # Combine in display order, limit to 9 total
+        ordered_tweets = (large + medium + small)[:9]
+
+        # Create mapping of tweet to shortcut number
+        shortcut_map = {id(t): i + 1 for i, t in enumerate(ordered_tweets)}
+
+        # Store URLs for shortcuts
+        for i, tweet in enumerate(ordered_tweets):
+            self.url_shortcuts[i + 1] = tweet.tweet.url
 
         for i, tweet in enumerate(self.tweets):
             if tweet.relevance_score >= 9:
@@ -344,9 +371,14 @@ class MosaicDisplay:
             else:
                 tile_width = min(width - 4, 40)
 
-            tiles.append(MosaicTile(tweet, tile_width, tile_id=i))
+            shortcut = shortcut_map.get(id(tweet))
+            tiles.append(MosaicTile(tweet, tile_width, tile_id=i, shortcut_num=shortcut))
 
         return tiles
+
+    def get_url_for_shortcut(self, num: int) -> str | None:
+        """Get the URL for a shortcut number (1-9)."""
+        return self.url_shortcuts.get(num)
 
     def render_vibe_section(self) -> RenderableType | None:
         """Render the vibe of the day section."""
@@ -458,7 +490,7 @@ class MosaicDisplay:
 
         elements.append(Text())
         elements.append(Align.center(self.render_legend()))
-        elements.append(Align.center(Text("[q]uit  [r]efresh", style="dim")))
+        elements.append(Align.center(Text("[1-9] open  [r]efresh  [q]uit", style="dim")))
 
         return Group(*elements)
 
@@ -519,6 +551,12 @@ async def run_mosaic(
                         if new_tweets:
                             mosaic.update_tweets(new_tweets, new_vibes)
                         last_refresh = now
+                    elif key and key.isdigit() and key != '0':
+                        # Open tweet by number
+                        num = int(key)
+                        url = mosaic.get_url_for_shortcut(num)
+                        if url:
+                            webbrowser.open(url)
 
                     # Auto refresh
                     if now - last_refresh >= refresh_minutes * 60:

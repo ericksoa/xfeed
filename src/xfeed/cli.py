@@ -321,7 +321,7 @@ def mosaic(refresh: int, count: int, threshold: int):
 
     console.print("[bold red]Starting XFEED Mosaic[/bold red]")
     console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+ │ Count: {count}[/dim]")
-    console.print("[dim][q]uit [r]efresh[/dim]\n")
+    console.print("[dim][1-9] open tweet │ [r]efresh │ [q]uit[/dim]\n")
 
     asyncio.run(run_mosaic(
         fetch_func=fetch_filtered,
