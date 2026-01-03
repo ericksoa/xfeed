@@ -534,6 +534,9 @@ async def run_mosaic(
     keyboard = KeyboardListener()
     keyboard.start()
 
+    # Set terminal window title
+    console.print("\033]0;XFEED Mosaic\007", end="")
+
     try:
         with Live(mosaic.render(), console=console, refresh_per_second=2, screen=True) as live:
             try:
@@ -573,5 +576,7 @@ async def run_mosaic(
                 pass
     finally:
         keyboard.stop()
+        # Restore default terminal title
+        console.print("\033]0;\007", end="")
 
     console.print("\n[dim]Mosaic stopped.[/dim]")
