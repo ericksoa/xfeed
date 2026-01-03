@@ -296,8 +296,12 @@ def mosaic(refresh: int, count: int, threshold: int):
     A visual heatmap where tweet tiles are sized and colored based on
     their relevance score. High-relevance tweets appear as large, bold
     blocks while lower-relevance ones are smaller and dimmer.
+
+    CLICK any tile to open that tweet in your browser.
+    Press 'q' to quit, 'r' to refresh.
     """
     from xfeed.mosaic import run_mosaic
+    from xfeed.summarizer import extract_vibe
 
     if not get_api_key():
         console.print(
@@ -319,10 +323,11 @@ def mosaic(refresh: int, count: int, threshold: int):
 
     console.print("[bold red]Starting XFEED Mosaic[/bold red]")
     console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+ │ Count: {count}[/dim]")
-    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+    console.print("[dim]Click tiles to open in browser │ [q]uit [r]efresh[/dim]\n")
 
     asyncio.run(run_mosaic(
         fetch_func=fetch_filtered,
+        vibe_func=extract_vibe,
         refresh_minutes=refresh,
         count=count,
         threshold=threshold,

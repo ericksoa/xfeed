@@ -53,3 +53,14 @@ class FilteredTweet:
     relevance_score: int  # 0-10
     reason: str  # Why it's relevant
     is_superdunk: bool = False  # Quote tweet with educational correction/insight
+
+
+@dataclass
+class TopicVibe:
+    """Represents a topic theme extracted from tweets."""
+
+    topic: str  # e.g., "AI Safety Developments"
+    vibe: str  # e.g., "Cautiously optimistic"
+    emoji: str  # e.g., "🔥"
+    description: str  # 1-sentence summary
+    tweet_count: int  # How many tweets relate to this
