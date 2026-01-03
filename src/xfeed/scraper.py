@@ -1,6 +1,7 @@
 """X timeline scraper using Playwright."""
 
 import asyncio
+import random
 import re
 from datetime import datetime, timedelta
 
@@ -10,6 +11,78 @@ from playwright.async_api import async_playwright, Page
 from xfeed.models import Tweet, QuotedTweet, Notification, NotificationType
 
 
+# =============================================================================
+# Human-like behavior settings
+# =============================================================================
+# These settings make scraping look like normal user browsing behavior.
+# All times are in milliseconds unless noted.
+
+# Scroll delays: humans don't scroll at fixed intervals
+SCROLL_DELAY_MIN = 1200  # Minimum ms between scrolls
+SCROLL_DELAY_MAX = 3500  # Maximum ms between scrolls
+SCROLL_DELAY_READ = 800  # Extra delay when "reading" (random chance)
+
+# Page load: humans wait and look around after page loads
+PAGE_LOAD_MIN = 2500
+PAGE_LOAD_MAX = 4500
+
+# Navigation: pause between switching pages (like a real user would)
+NAV_PAUSE_MIN = 1500
+NAV_PAUSE_MAX = 3000
+
+# Reading simulation: occasionally pause longer like reading content
+READ_PAUSE_CHANCE = 0.15  # 15% chance to pause and "read"
+READ_PAUSE_MIN = 2000
+READ_PAUSE_MAX = 5000
+
+# Rate limiting: minimum time between full scrape sessions (seconds)
+MIN_SCRAPE_INTERVAL = 120  # 2 minutes minimum between full refreshes
+
+# Track last scrape time for rate limiting
+_last_scrape_time: datetime | None = None
+
+
+def _human_scroll_delay() -> int:
+    """Get a human-like delay for scrolling (ms)."""
+    base = random.randint(SCROLL_DELAY_MIN, SCROLL_DELAY_MAX)
+    # Occasionally add extra "reading" time
+    if random.random() < READ_PAUSE_CHANCE:
+        base += random.randint(READ_PAUSE_MIN, READ_PAUSE_MAX)
+    return base
+
+
+def _human_page_load_delay() -> int:
+    """Get a human-like delay after page load (ms)."""
+    return random.randint(PAGE_LOAD_MIN, PAGE_LOAD_MAX)
+
+
+def _human_nav_delay() -> int:
+    """Get a human-like delay between page navigations (ms)."""
+    return random.randint(NAV_PAUSE_MIN, NAV_PAUSE_MAX)
+
+
+def _jitter(base_seconds: int, jitter_pct: float = 0.2) -> int:
+    """Add random jitter to a time value. Returns seconds."""
+    jitter_range = int(base_seconds * jitter_pct)
+    return base_seconds + random.randint(-jitter_range, jitter_range)
+
+
+def _check_rate_limit() -> bool:
+    """Check if we should rate limit. Returns True if OK to proceed."""
+    global _last_scrape_time
+    if _last_scrape_time is None:
+        return True
+    elapsed = (datetime.now() - _last_scrape_time).total_seconds()
+    return elapsed >= MIN_SCRAPE_INTERVAL
+
+
+def _update_scrape_time():
+    """Update the last scrape timestamp."""
+    global _last_scrape_time
+    _last_scrape_time = datetime.now()
+
+
+# =============================================================================
 # Selectors for X's DOM - these may need updating if X changes their structure
 TWEET_SELECTOR = 'article[data-testid="tweet"]'
 TWEET_TEXT_SELECTOR = '[data-testid="tweetText"]'
@@ -303,7 +376,7 @@ async def scrape_timeline(
 
         # Navigate to home timeline
         await page.goto("https://x.com/home")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(_human_page_load_delay())
 
         # Check if we're logged in
         if "/login" in page.url or "x.com/i/flow/login" in page.url:
@@ -316,7 +389,7 @@ async def scrape_timeline(
         # Get the logged-in user's handle
         my_handle = await get_logged_in_user(page)
 
-        # Scroll and collect tweets
+        # Scroll and collect tweets with human-like timing
         scroll_count = 0
         max_scrolls = count // 5 + 10
 
@@ -335,11 +408,12 @@ async def scrape_timeline(
                         on_progress(len(tweets), count)
 
             await page.evaluate("window.scrollBy(0, window.innerHeight)")
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(_human_scroll_delay())
             scroll_count += 1
 
         await browser.close()
 
+    _update_scrape_time()
     return list(tweets.values())[:count], my_handle
 
 
@@ -476,14 +550,14 @@ async def scrape_notifications(
         page = await context.new_page()
 
         await page.goto("https://x.com/notifications")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(_human_page_load_delay())
 
         # Check if logged in
         if "/login" in page.url:
             await browser.close()
             raise RuntimeError("Not logged in to X.")
 
-        # Scroll and collect notifications
+        # Scroll and collect notifications with human-like timing
         scroll_count = 0
         max_scrolls = count // 5 + 5
         seen_ids = set()
@@ -509,11 +583,12 @@ async def scrape_notifications(
                         on_progress(len(notifications), count)
 
             await page.evaluate("window.scrollBy(0, window.innerHeight)")
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(_human_scroll_delay())
             scroll_count += 1
 
         await browser.close()
 
+    _update_scrape_time()
     return notifications[:count]
 
 
@@ -552,7 +627,7 @@ async def scrape_profile_timeline(
         page = await context.new_page()
 
         await page.goto(f"https://x.com/{username}")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(_human_page_load_delay())
 
         # Check if logged in
         if "/login" in page.url:
@@ -561,7 +636,7 @@ async def scrape_profile_timeline(
 
         my_handle = f"@{username}"
 
-        # Scroll and collect tweets
+        # Scroll and collect tweets with human-like timing
         scroll_count = 0
         max_scrolls = count // 5 + 5
 
@@ -581,11 +656,12 @@ async def scrape_profile_timeline(
                         on_progress(len(tweets), count)
 
             await page.evaluate("window.scrollBy(0, window.innerHeight)")
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(_human_scroll_delay())
             scroll_count += 1
 
         await browser.close()
 
+    _update_scrape_time()
     return list(tweets.values())[:count]
 
 
@@ -598,6 +674,7 @@ async def scrape_all_engagement(
 ) -> tuple[list[Tweet], list[Tweet], list[Notification], str | None]:
     """
     Scrape home timeline, profile timeline, and notifications in a single session.
+    Uses human-like delays between actions to avoid bot detection.
 
     Returns:
         (home_tweets, profile_tweets, notifications, my_handle)
@@ -625,7 +702,7 @@ async def scrape_all_engagement(
             on_progress("home", 0, home_count)
 
         await page.goto("https://x.com/home")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(_human_page_load_delay())
 
         if "/login" in page.url:
             await browser.close()
@@ -646,17 +723,20 @@ async def scrape_all_engagement(
                         on_progress("home", len(home_tweets), home_count)
 
             await page.evaluate("window.scrollBy(0, window.innerHeight)")
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(_human_scroll_delay())
             scroll_count += 1
 
-        # 2. Scrape profile timeline
+        # 2. Scrape profile timeline (with navigation pause)
         if my_handle and profile_count > 0:
+            # Pause before navigating like a human would
+            await page.wait_for_timeout(_human_nav_delay())
+
             if on_progress:
                 on_progress("profile", 0, profile_count)
 
             username = my_handle.lstrip("@")
             await page.goto(f"https://x.com/{username}")
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(_human_page_load_delay())
 
             scroll_count = 0
             while len(profile_tweets) < profile_count and scroll_count < profile_count // 5 + 5:
@@ -672,16 +752,19 @@ async def scrape_all_engagement(
                                 on_progress("profile", len(profile_tweets), profile_count)
 
                 await page.evaluate("window.scrollBy(0, window.innerHeight)")
-                await page.wait_for_timeout(1500)
+                await page.wait_for_timeout(_human_scroll_delay())
                 scroll_count += 1
 
-        # 3. Scrape notifications
+        # 3. Scrape notifications (with navigation pause)
         if notifications_count > 0:
+            # Pause before navigating like a human would
+            await page.wait_for_timeout(_human_nav_delay())
+
             if on_progress:
                 on_progress("notifications", 0, notifications_count)
 
             await page.goto("https://x.com/notifications")
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(_human_page_load_delay())
 
             scroll_count = 0
             seen_ids = set()
@@ -704,11 +787,12 @@ async def scrape_all_engagement(
                             on_progress("notifications", len(notifications), notifications_count)
 
                 await page.evaluate("window.scrollBy(0, window.innerHeight)")
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(_human_scroll_delay())
                 scroll_count += 1
 
         await browser.close()
 
+    _update_scrape_time()
     return (
         list(home_tweets.values())[:home_count],
         list(profile_tweets.values())[:profile_count],
