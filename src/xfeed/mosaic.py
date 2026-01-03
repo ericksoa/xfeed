@@ -22,7 +22,7 @@ from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats, Notificati
 
 
 class KeyboardListener:
-    """Non-blocking keyboard listener for terminal."""
+    """Non-blocking keyboard listener for terminal using select()."""
 
     def __init__(self):
         self.queue: Queue[str] = Queue()
@@ -32,6 +32,8 @@ class KeyboardListener:
 
     def start(self):
         """Start listening for keypresses."""
+        if self._running:
+            return  # Already running
         self._running = True
         self._old_settings = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
@@ -43,14 +45,19 @@ class KeyboardListener:
         self._running = False
         if self._old_settings:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
+            self._old_settings = None
 
     def _listen(self):
-        """Background thread that reads keypresses."""
+        """Background thread that reads keypresses using select for non-blocking."""
+        import select
         while self._running:
             try:
-                ch = sys.stdin.read(1)
-                if ch:
-                    self.queue.put(ch)
+                # Use select with timeout so we can check _running periodically
+                readable, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if readable:
+                    ch = sys.stdin.read(1)
+                    if ch:
+                        self.queue.put(ch)
             except Exception:
                 break
 
@@ -60,6 +67,16 @@ class KeyboardListener:
             return self.queue.get_nowait()
         except Empty:
             return None
+
+    def drain_keys(self) -> list[str]:
+        """Get all queued keypresses, non-blocking."""
+        keys = []
+        while True:
+            try:
+                keys.append(self.queue.get_nowait())
+            except Empty:
+                break
+        return keys
 
 
 def normalize_emoji(emoji: str) -> tuple[str, int]:
@@ -871,11 +888,39 @@ async def run_mosaic(
                 while True:
                     now = time.time()
 
-                    # Handle keyboard input
-                    key = keyboard.get_key()
-                    if key == 'q':
+                    # Handle keyboard input - process all queued keys
+                    keys = keyboard.drain_keys()
+                    should_quit = False
+                    should_refresh = False
+
+                    for key in keys:
+                        if key == 'q':
+                            should_quit = True
+                            break
+                        elif key == 'r':
+                            should_refresh = True
+                        elif key and key.isdigit() and key != '0':
+                            num = int(key)
+                            url = mosaic.get_url_for_shortcut(num)
+                            if url:
+                                webbrowser.open(url)
+                        elif key == '+' or key == '=':
+                            if mosaic.threshold < 10:
+                                mosaic.threshold += 1
+                                mosaic.refilter_tweets()
+                        elif key == '-':
+                            if mosaic.threshold > 0:
+                                mosaic.threshold -= 1
+                                mosaic.refilter_tweets()
+                        elif key == 'c':
+                            mosaic.cycle_count()
+                        elif key == 'o':
+                            open_objectives_in_editor(keyboard, live)
+
+                    if should_quit:
                         break
-                    elif key == 'r':
+
+                    if should_refresh:
                         # Manual refresh (uses current mosaic settings)
                         set_terminal_title("Refreshing...")
                         result = await fetch_func(mosaic.count, mosaic.threshold)
@@ -888,28 +933,6 @@ async def run_mosaic(
                             mosaic.update_tweets(new_tweets, new_vibes, new_stats)
                             set_terminal_title(get_insight(new_vibes, new_tweets))
                         last_refresh = now
-                    elif key and key.isdigit() and key != '0':
-                        # Open tweet by number
-                        num = int(key)
-                        url = mosaic.get_url_for_shortcut(num)
-                        if url:
-                            webbrowser.open(url)
-                    elif key == '+' or key == '=':
-                        # Increase threshold (max 10)
-                        if mosaic.threshold < 10:
-                            mosaic.threshold += 1
-                            mosaic.refilter_tweets()
-                    elif key == '-':
-                        # Decrease threshold (min 0)
-                        if mosaic.threshold > 0:
-                            mosaic.threshold -= 1
-                            mosaic.refilter_tweets()
-                    elif key == 'c':
-                        # Cycle count
-                        mosaic.cycle_count()
-                    elif key == 'o':
-                        # Open objectives in editor
-                        open_objectives_in_editor(keyboard, live)
 
                     # Auto refresh (uses current mosaic settings)
                     if now - last_refresh >= refresh_minutes * 60:
@@ -926,7 +949,7 @@ async def run_mosaic(
                         last_refresh = now
 
                     live.update(mosaic.render())
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.1)  # Fast loop for responsive keyboard
 
             except KeyboardInterrupt:
                 pass
