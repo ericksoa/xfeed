@@ -502,6 +502,28 @@ class MosaicDisplay:
         self.last_refresh = time.time()
 
 
+def set_terminal_title(status: str = "") -> None:
+    """Set the terminal window title."""
+    if status:
+        title = f"XFEED Mosaic - {status[:30]}"
+    else:
+        title = "XFEED Mosaic"
+    sys.stdout.write(f"\033]0;{title}\007")
+    sys.stdout.flush()
+
+
+def get_insight(vibes: list[TopicVibe], tweets: list[FilteredTweet]) -> str:
+    """Get a short insight for the title bar."""
+    if vibes:
+        # Use top vibe's topic + emoji
+        v = vibes[0]
+        return f"{v.emoji} {v.topic}"
+    elif tweets:
+        # Use top tweet's author
+        return f"@{tweets[0].tweet.author_handle}"
+    return "No tweets"
+
+
 async def run_mosaic(
     fetch_func,
     vibe_func=None,
@@ -512,16 +534,21 @@ async def run_mosaic(
     """Run the mosaic display with periodic refresh."""
     console = Console()
 
+    set_terminal_title("Loading...")
     console.print("[dim]Fetching tweets for mosaic...[/dim]")
     tweets = await fetch_func(count, threshold)
 
     vibes = []
     if tweets and vibe_func:
+        set_terminal_title("Analyzing...")
         console.print("[dim]Analyzing vibe of the day...[/dim]")
         vibes = vibe_func(tweets)
 
     if not tweets:
         console.print("[yellow]No tweets found. Will retry on refresh.[/yellow]")
+
+    # Set title to top insight
+    set_terminal_title(get_insight(vibes, tweets))
 
     mosaic = MosaicDisplay(
         tweets,
@@ -533,9 +560,6 @@ async def run_mosaic(
     last_refresh = time.time()
     keyboard = KeyboardListener()
     keyboard.start()
-
-    # Set terminal window title
-    console.print("\033]0;XFEED Mosaic\007", end="")
 
     try:
         with Live(mosaic.render(), console=console, refresh_per_second=2, screen=True) as live:
@@ -549,10 +573,12 @@ async def run_mosaic(
                         break
                     elif key == 'r':
                         # Manual refresh
+                        set_terminal_title("Refreshing...")
                         new_tweets = await fetch_func(count, threshold)
                         new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
                         if new_tweets:
                             mosaic.update_tweets(new_tweets, new_vibes)
+                            set_terminal_title(get_insight(new_vibes, new_tweets))
                         last_refresh = now
                     elif key and key.isdigit() and key != '0':
                         # Open tweet by number
@@ -563,10 +589,12 @@ async def run_mosaic(
 
                     # Auto refresh
                     if now - last_refresh >= refresh_minutes * 60:
+                        set_terminal_title("Refreshing...")
                         new_tweets = await fetch_func(count, threshold)
                         new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
                         if new_tweets:
                             mosaic.update_tweets(new_tweets, new_vibes)
+                            set_terminal_title(get_insight(new_vibes, new_tweets))
                         last_refresh = now
 
                     live.update(mosaic.render())
@@ -577,6 +605,7 @@ async def run_mosaic(
     finally:
         keyboard.stop()
         # Restore default terminal title
-        console.print("\033]0;\007", end="")
+        sys.stdout.write("\033]0;\007")
+        sys.stdout.flush()
 
     console.print("\n[dim]Mosaic stopped.[/dim]")
