@@ -505,7 +505,7 @@ class MosaicDisplay:
 def set_terminal_title(status: str = "") -> None:
     """Set the terminal window title."""
     if status:
-        title = f"XFEED Mosaic - {status[:30]}"
+        title = f"XFEED Mosaic - {status}"
     else:
         title = "XFEED Mosaic"
     sys.stdout.write(f"\033]0;{title}\007")
