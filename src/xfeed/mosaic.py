@@ -1,25 +1,20 @@
-"""Block mosaic visualization for X feed using Textual."""
+"""Block mosaic visualization for X feed."""
 
 import asyncio
 import time
-import webbrowser
 from datetime import datetime
 
-from rich.console import RenderableType
+from rich.console import Console, Group, RenderableType
+from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
+from rich.table import Table
+from rich.align import Align
 from rich import box
-
-from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
-from textual.widgets import Static, Header, Footer
-from textual.reactive import reactive
-from textual.binding import Binding
 
 from xfeed.models import FilteredTweet, TopicVibe
 
 
-# Color palette based on relevance (heat map style)
 def get_block_style(score: int) -> tuple[str, str, str]:
     """Get block character, fg color, bg color based on score."""
     if score >= 9:
@@ -35,13 +30,13 @@ def get_block_style(score: int) -> tuple[str, str, str]:
 def get_tile_height(score: int) -> int:
     """Get tile height based on relevance score."""
     if score >= 9:
-        return 7
-    elif score >= 7:
         return 5
-    elif score >= 5:
-        return 4
-    else:
+    elif score >= 7:
         return 3
+    elif score >= 5:
+        return 2
+    else:
+        return 1
 
 
 def truncate(text: str, max_len: int) -> str:
@@ -52,64 +47,75 @@ def truncate(text: str, max_len: int) -> str:
     return text[:max_len - 1] + "…"
 
 
-def wrap_text(text: str, width: int, max_lines: int) -> list[str]:
-    """Wrap text to fit width, limited to max_lines."""
+def split_into_pages(text: str, line_width: int, lines_per_page: int) -> list[list[str]]:
+    """Split text into pages of wrapped lines."""
     text = text.replace("\n", " ").strip()
     words = text.split()
 
-    lines = []
+    all_lines = []
     current_line = ""
 
     for word in words:
         if not current_line:
             current_line = word
-        elif len(current_line) + 1 + len(word) <= width:
+        elif len(current_line) + 1 + len(word) <= line_width:
             current_line += " " + word
         else:
-            lines.append(current_line)
-            if len(lines) >= max_lines:
-                # Add ellipsis to last line if truncated
-                if lines[-1] and len(lines[-1]) < width - 1:
-                    lines[-1] += "…"
-                return lines
+            all_lines.append(current_line)
             current_line = word
 
-    if current_line and len(lines) < max_lines:
-        lines.append(current_line)
+    if current_line:
+        all_lines.append(current_line)
 
-    return lines
+    if not all_lines:
+        return [[]]
+
+    pages = []
+    for i in range(0, len(all_lines), lines_per_page):
+        pages.append(all_lines[i:i + lines_per_page])
+
+    return pages if pages else [[]]
 
 
-class TweetTile(Static):
-    """A clickable tweet tile widget."""
+class MosaicTile:
+    """A single tile in the mosaic representing a tweet."""
 
-    def __init__(
-        self,
-        tweet: FilteredTweet,
-        tile_width: int = 60,
-        tile_height: int = 5,
-        **kwargs
-    ):
-        super().__init__(**kwargs)
+    PAGE_DURATION = 3.0
+
+    def __init__(self, tweet: FilteredTweet, width: int, tile_id: int = 0):
         self.tweet = tweet
-        self.tile_width = tile_width
-        self.tile_height = tile_height
+        self.width = width
         self.score = tweet.relevance_score
         self.is_superdunk = tweet.is_superdunk
+        self.height = get_tile_height(self.score)
+        self.tile_id = tile_id
 
-    def on_click(self) -> None:
-        """Open the tweet in browser when clicked."""
-        url = self.tweet.tweet.url
-        if url:
-            webbrowser.open(url)
-            self.notify(f"Opening tweet by {self.tweet.tweet.author_handle}...")
+        content_width = self.width - 6
+        content_lines = max(1, self.height - 2)
 
-    def render(self) -> RenderableType:
-        """Render this tile as a Rich Panel."""
+        if self.is_superdunk and tweet.tweet.quoted_tweet:
+            quoted = tweet.tweet.quoted_tweet
+            quoted_prefix = f"💬 {quoted.author_handle}: {quoted.content}"
+            self.quoted_pages = split_into_pages(quoted_prefix, content_width, content_lines)
+            dunk_prefix = f"🎯 {tweet.tweet.content}"
+            self.dunk_pages = split_into_pages(dunk_prefix, content_width, content_lines)
+            self.pages = self.quoted_pages + self.dunk_pages
+        else:
+            self.pages = split_into_pages(tweet.tweet.content, content_width, content_lines)
+
+        self.total_pages = len(self.pages)
+
+    def get_current_page(self, time_now: float) -> int:
+        if self.total_pages <= 1:
+            return 0
+        offset_time = time_now + (self.tile_id * 0.5)
+        cycle_position = (offset_time / self.PAGE_DURATION) % self.total_pages
+        return int(cycle_position)
+
+    def render(self, time_now: float = 0) -> Panel:
         t = self.tweet.tweet
         block, fg, bg = get_block_style(self.score)
 
-        # Determine border style based on score and superdunk status
         if self.is_superdunk:
             border_style = "bold bright_green"
             box_type = box.DOUBLE
@@ -126,41 +132,34 @@ class TweetTile(Static):
             border_style = "dim"
             box_type = box.MINIMAL
 
-        # Build content based on tile size
-        content_width = self.tile_width - 6
-        content_lines = max(1, self.tile_height - 2)
+        current_page = self.get_current_page(time_now)
+        page_lines = self.pages[current_page] if current_page < len(self.pages) else []
 
-        lines = []
+        page_indicator = ""
+        if self.total_pages > 1:
+            page_indicator = f" [{current_page + 1}/{self.total_pages}]"
 
-        # Header
-        header = Text()
-        if self.is_superdunk:
-            header.append("🎯 ", style="bold")
-        header.append(f"[{self.score}] ", style=f"bold {fg}")
-        header.append(truncate(t.author_handle, 20), style="bold cyan")
-        header.append(f" · {t.formatted_time}", style="dim")
-        header.append(" 🔗", style="dim blue")  # Click hint
-        lines.append(header)
+        content_width = self.width - 4
 
-        # Content
-        if self.is_superdunk and t.quoted_tweet:
-            # Show quoted tweet first
-            quoted_text = f"💬 {t.quoted_tweet.author_handle}: {t.quoted_tweet.content}"
-            content_text = f"🎯 {t.content}"
-            full_text = quoted_text + " → " + content_text
-        else:
-            full_text = t.content
+        if self.height >= 5:
+            available_content = max(1, self.height - 2)
+            lines = []
+            header = Text()
+            if self.is_superdunk:
+                header.append("🎯 ", style="bold")
+            header.append(f"[{self.score}] ", style=f"bold {fg}")
+            header.append(truncate(t.author_handle, 20), style="bold cyan")
+            header.append(f" · {t.formatted_time}", style="dim")
+            if page_indicator:
+                header.append(page_indicator, style="dim magenta")
+            lines.append(header)
 
-        wrapped = wrap_text(full_text, content_width, content_lines - 1)
-        for line in wrapped:
-            lines.append(Text(line, style="white"))
+            for line in page_lines[:available_content]:
+                lines.append(Text(line, style="white"))
 
-        # Pad if needed
-        while len(lines) < content_lines:
-            lines.append(Text(""))
+            while len(lines) < available_content + 1:
+                lines.append(Text(""))
 
-        # Engagement (for larger tiles)
-        if self.tile_height >= 5:
             eng = Text()
             if t.likes:
                 eng.append(f"♥ {t.likes} ", style="red")
@@ -168,47 +167,87 @@ class TweetTile(Static):
                 eng.append(f"↻ {t.retweets}", style="green")
             lines.append(eng)
 
-        body = Text("\n").join(lines)
+            body = Text("\n").join(lines)
+
+        elif self.height >= 3:
+            available_content = max(1, self.height - 1)
+            lines = []
+            header = Text()
+            if self.is_superdunk:
+                header.append("🎯 ", style="bold")
+            header.append(f"[{self.score}] ", style=f"bold {fg}")
+            header.append(truncate(t.author_handle, 15), style="cyan")
+            if page_indicator:
+                header.append(page_indicator, style="dim magenta")
+            lines.append(header)
+
+            for line in page_lines[:available_content]:
+                lines.append(Text(line, style="white"))
+
+            while len(lines) < self.height:
+                lines.append(Text(""))
+
+            body = Text("\n").join(lines)
+
+        elif self.height >= 2:
+            available_content = max(1, self.height - 1)
+            header = Text()
+            header.append(f"[{self.score}] ", style=f"bold {fg}")
+            header.append(truncate(t.author_handle, 12), style="cyan")
+            if page_indicator:
+                header.append(page_indicator, style="dim magenta")
+
+            lines = [header]
+            for line in page_lines[:available_content]:
+                lines.append(Text(line, style="dim"))
+
+            body = Text("\n").join(lines)
+
+        else:
+            body = Text()
+            body.append(f"[{self.score}] ", style=f"{fg}")
+            body.append(truncate(t.author_handle, content_width - 5), style="dim cyan")
 
         return Panel(
             body,
             box=box_type,
             border_style=border_style,
-            width=self.tile_width,
-            height=self.tile_height + 2,
+            width=self.width,
+            height=self.height + 2,
             padding=(0, 1),
         )
 
 
-class VibeCard(Static):
+class VibeCard:
     """A card displaying a topic vibe."""
 
-    def __init__(self, vibe: TopicVibe, width: int = 35, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, vibe: TopicVibe, width: int = 40):
         self.vibe = vibe
-        self.card_width = width
+        self.width = width
 
-    def render(self) -> RenderableType:
-        """Render this vibe card."""
+    def render(self) -> Panel:
         v = self.vibe
         lines = []
 
-        # Topic header with emoji
         header = Text()
         header.append(f"{v.emoji} ", style="bold")
-        header.append(truncate(v.topic, self.card_width - 8), style="bold bright_magenta")
+        header.append(truncate(v.topic, self.width - 8), style="bold bright_magenta")
         lines.append(header)
 
-        # Vibe sentiment
         vibe_line = Text()
         vibe_line.append(v.vibe, style="italic cyan")
         vibe_line.append(f" ({v.tweet_count})", style="dim")
         lines.append(vibe_line)
 
-        # Description (wrapped)
-        desc_lines = wrap_text(v.description, self.card_width - 4, 2)
-        for line in desc_lines:
-            lines.append(Text(line, style="white"))
+        # Wrap description
+        desc = v.description
+        desc_width = self.width - 4
+        if len(desc) > desc_width:
+            lines.append(Text(desc[:desc_width], style="white"))
+            if len(desc) > desc_width:
+                lines.append(Text(truncate(desc[desc_width:], desc_width), style="white"))
+        else:
+            lines.append(Text(desc, style="white"))
 
         body = Text("\n").join(lines)
 
@@ -216,225 +255,168 @@ class VibeCard(Static):
             body,
             box=box.ROUNDED,
             border_style="bright_magenta",
-            width=self.card_width,
+            width=self.width,
             height=6,
             padding=(0, 1),
         )
 
 
-class MosaicApp(App):
-    """Textual app for mosaic tweet display."""
-
-    CSS = """
-    Screen {
-        background: $surface;
-    }
-
-    #header-bar {
-        dock: top;
-        height: 3;
-        background: $error;
-        color: $text;
-        text-align: center;
-        padding: 1;
-    }
-
-    #legend {
-        dock: bottom;
-        height: 3;
-        background: $surface-darken-1;
-        color: $text-muted;
-        text-align: center;
-        padding: 1;
-    }
-
-    .vibe-row {
-        align: center middle;
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    VibeCard {
-        margin: 0 1;
-    }
-
-    #main-container {
-        align: center middle;
-    }
-
-    .tile-row {
-        align: center middle;
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    TweetTile {
-        margin: 0 1;
-    }
-
-    TweetTile:hover {
-        background: $primary-background;
-    }
-    """
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("r", "refresh", "Refresh"),
-        Binding("escape", "quit", "Quit"),
-    ]
+class MosaicDisplay:
+    """Live mosaic display of filtered tweets."""
 
     def __init__(
         self,
         tweets: list[FilteredTweet],
         vibes: list[TopicVibe] | None = None,
-        fetch_func=None,
-        vibe_func=None,
-        refresh_minutes: int = 5,
-        count: int = 20,
-        threshold: int = 5,
+        refresh_callback=None,
+        refresh_interval: int = 300,
     ):
-        super().__init__()
         self.tweets = sorted(tweets, key=lambda x: x.relevance_score, reverse=True)
         self.vibes = vibes or []
-        self.fetch_func = fetch_func
-        self.vibe_func = vibe_func
-        self.refresh_minutes = refresh_minutes
-        self.count = count
-        self.threshold = threshold
+        self.console = Console()
+        self.refresh_callback = refresh_callback
+        self.refresh_interval = refresh_interval
         self.last_refresh = time.time()
 
-    def compose(self) -> ComposeResult:
-        """Compose the app layout."""
-        yield Static(self._render_header(), id="header-bar")
+    def create_tiles(self) -> list[MosaicTile]:
+        """Create tiles for tweets."""
+        tiles = []
+        width = self.console.width
 
-        with ScrollableContainer(id="main-container"):
-            # Vibe section at the top
-            if self.vibes:
-                yield from self._compose_vibe_section()
+        for i, tweet in enumerate(self.tweets):
+            if tweet.relevance_score >= 9:
+                tile_width = min(width - 4, 80)
+            elif tweet.relevance_score >= 7:
+                tile_width = min(width - 4, 60)
+            elif tweet.relevance_score >= 5:
+                tile_width = min(width - 4, 50)
+            else:
+                tile_width = min(width - 4, 40)
 
-            # Tweet tiles
-            yield from self._compose_tiles()
+            tiles.append(MosaicTile(tweet, tile_width, tile_id=i))
 
-        yield Static(self._render_legend(), id="legend")
+        return tiles
 
-    def _compose_vibe_section(self) -> ComposeResult:
-        """Compose the vibe of the day section."""
-        # Vibe cards spread across the top (no header label)
-        num_vibes = len(self.vibes[:3])
-        # Calculate width to spread evenly (roughly 120 chars total width)
-        card_width = 38 if num_vibes == 3 else 55 if num_vibes == 2 else 80
-        with Horizontal(classes="vibe-row"):
-            for vibe in self.vibes[:3]:
-                yield VibeCard(vibe, width=card_width)
+    def render_vibe_section(self) -> RenderableType | None:
+        """Render the vibe of the day section."""
+        if not self.vibes:
+            return None
 
-    def _render_header(self) -> Text:
+        num_vibes = min(3, len(self.vibes))
+        width = self.console.width
+
+        # Calculate card width to fill available space
+        card_width = max(30, (width - 10) // num_vibes)
+
+        table = Table.grid(padding=1)
+        for _ in range(num_vibes):
+            table.add_column()
+
+        cards = [VibeCard(v, width=card_width).render() for v in self.vibes[:num_vibes]]
+        table.add_row(*cards)
+
+        return Align.center(table)
+
+    def render_header(self) -> Text:
         """Render the header bar."""
         now = datetime.now().strftime("%H:%M:%S")
+        next_refresh = max(0, self.refresh_interval - (time.time() - self.last_refresh))
+
+        # Count displayed tweets
+        large = len([t for t in self.tweets if t.relevance_score >= 9][:3])
+        medium = len([t for t in self.tweets if 7 <= t.relevance_score < 9][:6])
+        small = len([t for t in self.tweets if t.relevance_score < 7][:9])
+        displayed = large + medium + small
+
         header = Text()
-        header.append("▄" * 15, style="bright_red")
-        header.append(" XFEED MOSAIC ", style="bold white")
-        header.append("▄" * 15, style="bright_red")
+        header.append("▄" * 20, style="bright_red")
+        header.append(" XFEED MOSAIC ", style="bold white on red")
+        header.append("▄" * 20, style="bright_red")
         header.append(f"  {now}", style="dim")
-        header.append(f"  │  {len(self.tweets)} tweets", style="dim")
-        header.append("  │  Click tile to open", style="dim cyan")
+        header.append(f"  │  refresh in {int(next_refresh)}s", style="dim")
+        header.append(f"  │  {displayed} tweets", style="dim")
+
         return header
 
-    def _render_legend(self) -> Text:
-        """Render the legend."""
+    def render_legend(self) -> Text:
+        """Render a legend."""
         legend = Text()
         legend.append("█ 9-10 ", style="red")
         legend.append("▓ 7-8 ", style="yellow")
         legend.append("▒ 5-6 ", style="blue")
         legend.append("░ <5 ", style="dim")
         legend.append("│ ", style="dim")
-        legend.append("🎯 superdunk ", style="bright_green")
-        legend.append("│ ", style="dim")
-        legend.append("[q]uit  [r]efresh", style="dim cyan")
+        legend.append("🎯 superdunk", style="bright_green")
         return legend
 
-    def _compose_tiles(self) -> ComposeResult:
-        """Compose tweet tiles."""
-        if not self.tweets:
-            yield Static("No tweets to display...", classes="tile-row")
-            return
+    def render(self) -> Group:
+        """Render the full mosaic display."""
+        now = time.time()
+        tiles = self.create_tiles()
 
-        # Categorize tweets
-        large_tweets = [t for t in self.tweets if t.relevance_score >= 9][:3]
-        medium_tweets = [t for t in self.tweets if 7 <= t.relevance_score < 9][:6]
-        small_tweets = [t for t in self.tweets if t.relevance_score < 7][:9]
+        elements: list[RenderableType] = [
+            Align.center(self.render_header()),
+            Text(),
+        ]
 
-        # Large tiles (full width, one per row)
-        for tweet in large_tweets:
-            with Horizontal(classes="tile-row"):
-                yield TweetTile(
-                    tweet,
-                    tile_width=80,
-                    tile_height=get_tile_height(tweet.relevance_score),
-                )
+        # Add vibe section at the top
+        vibe_section = self.render_vibe_section()
+        if vibe_section:
+            elements.append(vibe_section)
+            elements.append(Text())
 
-        # Medium tiles (2 per row)
-        for i in range(0, len(medium_tweets), 2):
-            with Horizontal(classes="tile-row"):
-                yield TweetTile(
-                    medium_tweets[i],
-                    tile_width=55,
-                    tile_height=get_tile_height(medium_tweets[i].relevance_score),
-                )
-                if i + 1 < len(medium_tweets):
-                    yield TweetTile(
-                        medium_tweets[i + 1],
-                        tile_width=55,
-                        tile_height=get_tile_height(medium_tweets[i + 1].relevance_score),
-                    )
+        if not tiles:
+            elements.append(Align.center(Text("No tweets to display...", style="dim italic")))
+        else:
+            large_tiles = [t for t in tiles if t.score >= 9][:3]
+            medium_tiles = [t for t in tiles if 7 <= t.score < 9][:6]
+            small_tiles = [t for t in tiles if t.score < 7][:9]
 
-        # Small tiles (3 per row)
-        for i in range(0, len(small_tweets), 3):
-            with Horizontal(classes="tile-row"):
-                for j in range(3):
-                    if i + j < len(small_tweets):
-                        yield TweetTile(
-                            small_tweets[i + j],
-                            tile_width=40,
-                            tile_height=get_tile_height(small_tweets[i + j].relevance_score),
-                        )
+            # Large tiles
+            for tile in large_tiles:
+                elements.append(Align.center(tile.render(now)))
 
-    async def action_refresh(self) -> None:
-        """Refresh tweets from the feed."""
-        if self.fetch_func:
-            self.notify("Refreshing feed...")
-            try:
-                new_tweets = await self.fetch_func(self.count, self.threshold)
-                if new_tweets:
-                    self.tweets = sorted(new_tweets, key=lambda x: x.relevance_score, reverse=True)
-                    # Also refresh vibes if function provided
-                    if self.vibe_func:
-                        self.vibes = self.vibe_func(self.tweets)
-                    self.last_refresh = time.time()
-                    # Rebuild the UI
-                    await self._rebuild_tiles()
-                    self.notify(f"Loaded {len(new_tweets)} tweets")
-                else:
-                    self.notify("No new tweets found", severity="warning")
-            except Exception as e:
-                self.notify(f"Refresh failed: {e}", severity="error")
+            # Medium tiles (2 per row)
+            if medium_tiles:
+                table = Table.grid(padding=1)
+                table.add_column()
+                table.add_column()
 
-    async def _rebuild_tiles(self) -> None:
-        """Rebuild the tile display."""
-        container = self.query_one("#main-container")
-        await container.remove_children()
+                for i in range(0, len(medium_tiles), 2):
+                    row = [medium_tiles[i].render(now)]
+                    if i + 1 < len(medium_tiles):
+                        row.append(medium_tiles[i + 1].render(now))
+                    table.add_row(*row)
 
-        # Rebuild vibe section if we have vibes
-        if self.vibes:
-            for widget in self._compose_vibe_section():
-                await container.mount(widget)
+                elements.append(Align.center(table))
 
-        # Rebuild tweet tiles
-        for widget in self._compose_tiles():
-            await container.mount(widget)
+            # Small tiles (3 per row)
+            if small_tiles:
+                small_table = Table.grid(padding=0)
+                for _ in range(3):
+                    small_table.add_column()
 
-        # Update header
-        header = self.query_one("#header-bar", Static)
-        header.update(self._render_header())
+                for i in range(0, len(small_tiles), 3):
+                    row = [small_tiles[i].render(now)]
+                    for j in range(1, 3):
+                        if i + j < len(small_tiles):
+                            row.append(small_tiles[i + j].render(now))
+                    small_table.add_row(*row)
+
+                elements.append(Align.center(small_table))
+
+        elements.append(Text())
+        elements.append(Align.center(self.render_legend()))
+        elements.append(Align.center(Text("Press Ctrl+C to exit", style="dim")))
+
+        return Group(*elements)
+
+    def update_tweets(self, tweets: list[FilteredTweet], vibes: list[TopicVibe] | None = None):
+        """Update with new tweets and vibes."""
+        self.tweets = sorted(tweets, key=lambda x: x.relevance_score, reverse=True)
+        if vibes is not None:
+            self.vibes = vibes
+        self.last_refresh = time.time()
 
 
 async def run_mosaic(
@@ -444,41 +426,45 @@ async def run_mosaic(
     count: int = 20,
     threshold: int = 5,
 ):
-    """
-    Run the mosaic display.
-
-    Args:
-        fetch_func: Async function that returns list[FilteredTweet]
-        vibe_func: Function that takes tweets and returns list[TopicVibe]
-        refresh_minutes: Minutes between feed refresh
-        count: Number of tweets to fetch
-        threshold: Relevance threshold
-    """
-    from rich.console import Console
+    """Run the mosaic display with periodic refresh."""
     console = Console()
 
-    # Initial fetch
     console.print("[dim]Fetching tweets for mosaic...[/dim]")
     tweets = await fetch_func(count, threshold)
 
-    if not tweets:
-        console.print("[yellow]No tweets found.[/yellow]")
-        tweets = []
-
-    # Extract vibes from tweets
     vibes = []
     if tweets and vibe_func:
         console.print("[dim]Analyzing vibe of the day...[/dim]")
         vibes = vibe_func(tweets)
 
-    app = MosaicApp(
+    if not tweets:
+        console.print("[yellow]No tweets found. Will retry on refresh.[/yellow]")
+
+    mosaic = MosaicDisplay(
         tweets,
         vibes=vibes,
-        fetch_func=fetch_func,
-        vibe_func=vibe_func,
-        refresh_minutes=refresh_minutes,
-        count=count,
-        threshold=threshold,
+        refresh_callback=fetch_func,
+        refresh_interval=refresh_minutes * 60,
     )
 
-    await app.run_async()
+    last_refresh = time.time()
+
+    with Live(mosaic.render(), console=console, refresh_per_second=2, screen=True) as live:
+        try:
+            while True:
+                now = time.time()
+
+                if now - last_refresh >= refresh_minutes * 60:
+                    new_tweets = await fetch_func(count, threshold)
+                    new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
+                    if new_tweets:
+                        mosaic.update_tweets(new_tweets, new_vibes)
+                    last_refresh = now
+
+                live.update(mosaic.render())
+                await asyncio.sleep(0.5)
+
+        except KeyboardInterrupt:
+            pass
+
+    console.print("\n[dim]Mosaic stopped.[/dim]")

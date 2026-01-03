@@ -297,8 +297,6 @@ def mosaic(refresh: int, count: int, threshold: int):
     their relevance score. High-relevance tweets appear as large, bold
     blocks while lower-relevance ones are smaller and dimmer.
 
-    CLICK any tile to open that tweet in your browser.
-    Press 'q' to quit, 'r' to refresh.
     """
     from xfeed.mosaic import run_mosaic
     from xfeed.summarizer import extract_vibe
