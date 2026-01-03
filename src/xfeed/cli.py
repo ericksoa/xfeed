@@ -240,5 +240,45 @@ def objectives(edit: bool, show: bool):
             sys.exit(1)
 
 
+@main.command()
+@click.option("--rotate", "-r", default=5, help="Seconds between tweet rotation (default: 5)")
+@click.option("--refresh", "-R", default=5, help="Minutes between feed refresh (default: 5)")
+@click.option("--count", "-n", default=20, help="Tweets to fetch per refresh (default: 20)")
+@click.option("--threshold", "-t", default=7, help="Relevance threshold (default: 7)")
+def ticker(rotate: int, refresh: int, count: int, threshold: int):
+    """CNN-style rotating ticker display of filtered tweets."""
+    from xfeed.ticker import run_ticker
+
+    if not get_api_key():
+        console.print(
+            "[red]Error:[/red] Anthropic API key not configured.\n"
+            "Add ANTHROPIC_API_KEY to .env file in the project directory."
+        )
+        sys.exit(1)
+
+    async def fetch_filtered(count: int, threshold: int):
+        """Fetch and filter tweets."""
+        try:
+            tweets = await scrape_timeline(count=count, headless=True)
+            if not tweets:
+                return []
+            return filter_tweets(tweets, threshold=threshold)
+        except Exception as e:
+            console.print(f"[red]Fetch error:[/red] {e}")
+            return []
+
+    console.print(f"[bold blue]Starting X Feed Ticker[/bold blue]")
+    console.print(f"[dim]Rotate: {rotate}s │ Refresh: {refresh}min │ Threshold: {threshold}/10[/dim]")
+    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    asyncio.run(run_ticker(
+        fetch_func=fetch_filtered,
+        rotate_seconds=rotate,
+        refresh_minutes=refresh,
+        count=count,
+        threshold=threshold,
+    ))
+
+
 if __name__ == "__main__":
     main()
