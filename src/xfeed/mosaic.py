@@ -316,15 +316,6 @@ class VibeCard:
         # Content width = panel width - 2 (borders) - 2 (padding)
         content_width = self.width - 4
 
-        # Build header with proper cell-width truncation
-        # Emoji (2 cells) + space (1 cell) = 3 cells prefix
-        header = Text()
-        header.append(f"{v.emoji} ", style="bold")
-        topic_text = Text(v.topic, style="bold bright_magenta")
-        topic_text.truncate(content_width - 3, overflow="ellipsis")
-        header.append(topic_text)
-        lines.append(header)
-
         # Vibe line with cell-aware truncation
         vibe_line = Text()
         vibe_text = Text(v.vibe, style="italic cyan")
@@ -340,12 +331,20 @@ class VibeCard:
 
         body = Text("\n").join(lines)
 
+        # Truncate title for border
+        title_max = self.width - 6  # Leave room for border chars
+        title = f"{v.emoji} {v.topic}"
+        if len(title) > title_max:
+            title = title[:title_max - 1] + "…"
+
         return Panel(
             body,
+            title=title,
+            title_align="left",
             box=box.ROUNDED,
             border_style="bright_magenta",
             width=self.width,
-            height=6,
+            height=5,
             padding=(0, 1),
         )
 
