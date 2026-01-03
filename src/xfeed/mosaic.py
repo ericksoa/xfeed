@@ -248,20 +248,10 @@ class MosaicApp(App):
         padding: 1;
     }
 
-    #vibe-section {
-        height: auto;
-        align: center middle;
-        margin: 1 0;
-    }
-
-    #vibe-header {
-        text-align: center;
-        margin-bottom: 1;
-    }
-
     .vibe-row {
         align: center middle;
         height: auto;
+        margin-bottom: 1;
     }
 
     VibeCard {
@@ -329,16 +319,13 @@ class MosaicApp(App):
 
     def _compose_vibe_section(self) -> ComposeResult:
         """Compose the vibe of the day section."""
-        # Header
-        vibe_header = Text()
-        vibe_header.append("💭 ", style="bold")
-        vibe_header.append("VIBE OF THE DAY", style="bold bright_magenta")
-        yield Static(vibe_header, id="vibe-header")
-
-        # Vibe cards in a row
+        # Vibe cards spread across the top (no header label)
+        num_vibes = len(self.vibes[:3])
+        # Calculate width to spread evenly (roughly 120 chars total width)
+        card_width = 38 if num_vibes == 3 else 55 if num_vibes == 2 else 80
         with Horizontal(classes="vibe-row"):
             for vibe in self.vibes[:3]:
-                yield VibeCard(vibe, width=38)
+                yield VibeCard(vibe, width=card_width)
 
     def _render_header(self) -> Text:
         """Render the header bar."""
