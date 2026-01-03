@@ -28,6 +28,10 @@ class Tweet:
     has_media: bool = False
     url: str = ""
     quoted_tweet: QuotedTweet | None = None  # For quote tweets
+    # Engagement tracking
+    is_by_me: bool = False  # True if I authored this tweet
+    is_liked_by_me: bool = False  # True if I liked this tweet
+    is_retweeted_by_me: bool = False  # True if I retweeted this tweet
 
     @property
     def formatted_time(self) -> str:
@@ -64,3 +68,16 @@ class TopicVibe:
     emoji: str  # e.g., "🔥"
     description: str  # 1-sentence summary
     tweet_count: int  # How many tweets relate to this
+
+
+@dataclass
+class MyEngagementStats:
+    """Statistics about the user's engagement in the current feed."""
+
+    my_handle: str
+    my_tweets_count: int = 0
+    total_likes_received: int = 0
+    total_retweets_received: int = 0
+    total_replies_received: int = 0
+    tweets_i_liked_count: int = 0
+    tweets_i_retweeted_count: int = 0

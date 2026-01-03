@@ -17,10 +17,14 @@ USER_NAME_SELECTOR = '[data-testid="User-Name"]'
 LIKE_COUNT_SELECTOR = '[data-testid="like"] span'
 RETWEET_COUNT_SELECTOR = '[data-testid="retweet"] span'
 REPLY_COUNT_SELECTOR = '[data-testid="reply"] span'
+LIKE_BUTTON_SELECTOR = '[data-testid="like"]'
+RETWEET_BUTTON_SELECTOR = '[data-testid="retweet"]'
 TIME_SELECTOR = "time"
 # Quote tweet is embedded in a card/container - try multiple selectors
 QUOTE_TWEET_SELECTOR = '[data-testid="quoteTweet"]'
 QUOTE_TWEET_ALT_SELECTOR = 'div[role="link"][tabindex="0"]'  # Fallback
+# Profile link for detecting logged-in user
+PROFILE_LINK_SELECTOR = 'a[data-testid="AppTabBar_Profile_Link"]'
 
 
 def get_x_cookies_from_chrome() -> list[dict]:
@@ -99,6 +103,21 @@ def parse_relative_time(time_str: str) -> datetime:
     return now
 
 
+async def get_logged_in_user(page: Page) -> str | None:
+    """Extract the logged-in user's handle from the page."""
+    try:
+        profile_link = await page.query_selector(PROFILE_LINK_SELECTOR)
+        if profile_link:
+            href = await profile_link.get_attribute("href")
+            # href is like "/username" -> extract "username"
+            if href:
+                handle = href.strip("/")
+                return f"@{handle}" if not handle.startswith("@") else handle
+        return None
+    except Exception:
+        return None
+
+
 async def extract_quoted_tweet(article) -> QuotedTweet | None:
     """Extract quoted tweet data if present."""
     try:
@@ -146,7 +165,7 @@ async def extract_quoted_tweet(article) -> QuotedTweet | None:
         return None
 
 
-async def extract_tweet_data(article, page: Page) -> Tweet | None:
+async def extract_tweet_data(article, page: Page, my_handle: str | None = None) -> Tweet | None:
     """Extract tweet data from an article element."""
     try:
         # Get tweet ID from the link
@@ -198,6 +217,32 @@ async def extract_tweet_data(article, page: Page) -> Tweet | None:
         # Check for quoted tweet
         quoted_tweet = await extract_quoted_tweet(article)
 
+        # Check if this is my tweet
+        is_by_me = False
+        if my_handle:
+            # Normalize handles for comparison (both should have @)
+            my_handle_norm = my_handle.lower()
+            author_handle_norm = author_handle.lower()
+            is_by_me = my_handle_norm == author_handle_norm
+
+        # Check if I liked this tweet
+        # When not liked: "9 Likes. Like" - ends with "Like"
+        # When liked: "9 Likes. Unlike" - contains "Unlike"
+        is_liked_by_me = False
+        like_button = await article.query_selector(LIKE_BUTTON_SELECTOR)
+        if like_button:
+            aria_label = await like_button.get_attribute("aria-label") or ""
+            is_liked_by_me = "unlike" in aria_label.lower()
+
+        # Check if I retweeted this tweet
+        # When not retweeted: "0 reposts. Repost" - ends with "Repost"
+        # When retweeted: "0 reposts. Undo repost" - contains "Undo"
+        is_retweeted_by_me = False
+        retweet_button = await article.query_selector(RETWEET_BUTTON_SELECTOR)
+        if retweet_button:
+            aria_label = await retweet_button.get_attribute("aria-label") or ""
+            is_retweeted_by_me = "undo" in aria_label.lower()
+
         return Tweet(
             id=tweet_id,
             author=author,
@@ -210,6 +255,9 @@ async def extract_tweet_data(article, page: Page) -> Tweet | None:
             has_media=has_media,
             url=f"https://x.com{tweet_url}" if tweet_url.startswith("/") else tweet_url,
             quoted_tweet=quoted_tweet,
+            is_by_me=is_by_me,
+            is_liked_by_me=is_liked_by_me,
+            is_retweeted_by_me=is_retweeted_by_me,
         )
     except Exception:
         return None
@@ -219,7 +267,7 @@ async def scrape_timeline(
     count: int = 50,
     headless: bool = True,
     on_progress: callable = None,
-) -> list[Tweet]:
+) -> tuple[list[Tweet], str | None]:
     """
     Scrape tweets from the X home timeline using Chrome cookies.
 
@@ -229,9 +277,10 @@ async def scrape_timeline(
         on_progress: Callback function for progress updates
 
     Returns:
-        List of Tweet objects
+        Tuple of (List of Tweet objects, logged-in user handle or None)
     """
     tweets: dict[str, Tweet] = {}
+    my_handle: str | None = None
 
     # Extract cookies from Chrome
     cookies = get_x_cookies_from_chrome()
@@ -264,6 +313,9 @@ async def scrape_timeline(
                 "then try again."
             )
 
+        # Get the logged-in user's handle
+        my_handle = await get_logged_in_user(page)
+
         # Scroll and collect tweets
         scroll_count = 0
         max_scrolls = count // 5 + 10
@@ -275,7 +327,7 @@ async def scrape_timeline(
                 if len(tweets) >= count:
                     break
 
-                tweet = await extract_tweet_data(article, page)
+                tweet = await extract_tweet_data(article, page, my_handle)
                 if tweet and tweet.id not in tweets:
                     tweets[tweet.id] = tweet
 
@@ -288,4 +340,4 @@ async def scrape_timeline(
 
         await browser.close()
 
-    return list(tweets.values())[:count]
+    return list(tweets.values())[:count], my_handle

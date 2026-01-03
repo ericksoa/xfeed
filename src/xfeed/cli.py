@@ -107,7 +107,7 @@ def fetch(count: int, threshold: int | None, raw: bool, json_output: bool):
         task = progress.add_task("Fetching tweets from X...", total=None)
 
         try:
-            tweets = asyncio.run(scrape_timeline(
+            tweets, _my_handle = asyncio.run(scrape_timeline(
                 count=count,
                 headless=True,
                 on_progress=lambda current, total: progress.update(
@@ -263,7 +263,7 @@ def ticker(rotate: int, refresh: int, count: int, threshold: int, compact: bool)
     async def fetch_filtered(count: int, threshold: int):
         """Fetch and filter tweets."""
         try:
-            tweets = await scrape_timeline(count=count, headless=True)
+            tweets, _my_handle = await scrape_timeline(count=count, headless=True)
             if not tweets:
                 return []
             return filter_tweets(tweets, threshold=threshold)
@@ -309,15 +309,15 @@ def mosaic(refresh: int, count: int, threshold: int):
         sys.exit(1)
 
     async def fetch_filtered(count: int, threshold: int):
-        """Fetch and filter tweets."""
+        """Fetch and filter tweets. Returns (filtered_tweets, my_handle)."""
         try:
-            tweets = await scrape_timeline(count=count, headless=True)
+            tweets, my_handle = await scrape_timeline(count=count, headless=True)
             if not tweets:
-                return []
-            return filter_tweets(tweets, threshold=threshold)
+                return [], my_handle
+            return filter_tweets(tweets, threshold=threshold), my_handle
         except Exception as e:
             console.print(f"[red]Fetch error:[/red] {e}")
-            return []
+            return [], None
 
     console.print("[bold red]Starting XFEED Mosaic[/bold red]")
     console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+ │ Count: {count}[/dim]")
@@ -390,7 +390,7 @@ def watch(interval: int, count: int, threshold: int, top: int):
     async def fetch_and_print():
         """Fetch tweets and print update."""
         try:
-            tweets = await scrape_timeline(count=count, headless=True)
+            tweets, _my_handle = await scrape_timeline(count=count, headless=True)
             if tweets:
                 filtered = filter_tweets(tweets, threshold=threshold)
                 print_update(filtered)

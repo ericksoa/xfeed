@@ -18,7 +18,7 @@ from rich.table import Table
 from rich.align import Align
 from rich import box
 
-from xfeed.models import FilteredTweet, TopicVibe
+from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats
 
 
 class KeyboardListener:
@@ -199,6 +199,13 @@ class MosaicTile:
                 header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 18), style="bold cyan")
+            # Engagement badges
+            if t.is_by_me:
+                header.append(" 👤", style="bold bright_green")
+            if t.is_liked_by_me:
+                header.append(" ♥", style="bold red")
+            if t.is_retweeted_by_me:
+                header.append(" ↻", style="bold green")
             header.append(f" · {t.formatted_time}", style="dim")
             if page_indicator:
                 header.append(page_indicator, style="dim magenta")
@@ -229,6 +236,13 @@ class MosaicTile:
                 header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 12), style="cyan")
+            # Engagement badges
+            if t.is_by_me:
+                header.append(" 👤", style="bold bright_green")
+            if t.is_liked_by_me:
+                header.append(" ♥", style="bold red")
+            if t.is_retweeted_by_me:
+                header.append(" ↻", style="bold green")
             if page_indicator:
                 header.append(page_indicator, style="dim magenta")
             lines.append(header)
@@ -248,6 +262,13 @@ class MosaicTile:
                 header.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 10), style="cyan")
+            # Engagement badges (compact)
+            if t.is_by_me:
+                header.append(" 👤", style="bright_green")
+            if t.is_liked_by_me:
+                header.append(" ♥", style="red")
+            if t.is_retweeted_by_me:
+                header.append(" ↻", style="green")
             if page_indicator:
                 header.append(page_indicator, style="dim magenta")
 
@@ -262,7 +283,14 @@ class MosaicTile:
             if self.shortcut_num:
                 body.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
             body.append(f"[{self.score}] ", style=f"{fg}")
-            body.append(truncate(t.author_handle, content_width - 8), style="dim cyan")
+            body.append(truncate(t.author_handle, content_width - 12), style="dim cyan")
+            # Engagement badges (minimal)
+            if t.is_by_me:
+                body.append(" 👤", style="bright_green")
+            if t.is_liked_by_me:
+                body.append(" ♥", style="red")
+            if t.is_retweeted_by_me:
+                body.append(" ↻", style="green")
 
         return Panel(
             body,
@@ -322,6 +350,77 @@ class VibeCard:
         )
 
 
+class EngagementCard:
+    """A card displaying user's engagement stats."""
+
+    def __init__(self, stats: MyEngagementStats, width: int = 50):
+        self.stats = stats
+        self.width = width
+
+    def render(self) -> Panel:
+        s = self.stats
+        content_width = self.width - 4
+
+        lines = []
+
+        # Header with user handle
+        header = Text()
+        header.append("👤 ", style="bold")
+        header.append("MY ENGAGEMENT", style="bold bright_cyan")
+        if s.my_handle:
+            header.append(f" ({s.my_handle})", style="dim")
+        lines.append(header)
+
+        # My tweets stats
+        if s.my_tweets_count > 0:
+            my_line = Text()
+            my_line.append(f"Your tweets: {s.my_tweets_count}", style="bright_green")
+            my_line.append("  │  ", style="dim")
+            my_line.append(f"+{s.total_likes_received} ♥", style="red")
+            my_line.append(f"  +{s.total_retweets_received} ↻", style="green")
+            my_line.append(f"  +{s.total_replies_received} 💬", style="blue")
+            lines.append(my_line)
+        else:
+            lines.append(Text("No tweets from you in feed", style="dim"))
+
+        # Engagement I gave
+        eng_line = Text()
+        eng_line.append(f"You liked: {s.tweets_i_liked_count}", style="red")
+        eng_line.append("  │  ", style="dim")
+        eng_line.append(f"You RT'd: {s.tweets_i_retweeted_count}", style="green")
+        lines.append(eng_line)
+
+        body = Text("\n").join(lines)
+
+        return Panel(
+            body,
+            box=box.ROUNDED,
+            border_style="bright_cyan",
+            width=self.width,
+            height=5,
+            padding=(0, 1),
+        )
+
+
+def compute_engagement_stats(tweets: list[FilteredTweet], my_handle: str | None) -> MyEngagementStats:
+    """Compute engagement statistics from filtered tweets."""
+    stats = MyEngagementStats(my_handle=my_handle or "unknown")
+
+    for ft in tweets:
+        t = ft.tweet
+        if t.is_by_me:
+            stats.my_tweets_count += 1
+            stats.total_likes_received += t.likes
+            stats.total_retweets_received += t.retweets
+            stats.total_replies_received += t.replies
+        if t.is_liked_by_me:
+            stats.tweets_i_liked_count += 1
+        if t.is_retweeted_by_me:
+            stats.tweets_i_retweeted_count += 1
+
+    return stats
+
+
 class MosaicDisplay:
     """Live mosaic display of filtered tweets."""
 
@@ -329,11 +428,13 @@ class MosaicDisplay:
         self,
         tweets: list[FilteredTweet],
         vibes: list[TopicVibe] | None = None,
+        engagement_stats: MyEngagementStats | None = None,
         refresh_callback=None,
         refresh_interval: int = 300,
     ):
         self.tweets = sorted(tweets, key=lambda x: x.relevance_score, reverse=True)
         self.vibes = vibes or []
+        self.engagement_stats = engagement_stats
         self.console = Console()
         self.refresh_callback = refresh_callback
         self.refresh_interval = refresh_interval
@@ -400,6 +501,19 @@ class MosaicDisplay:
 
         return Align.center(table)
 
+    def render_engagement_section(self) -> RenderableType | None:
+        """Render the my engagement section."""
+        if not self.engagement_stats:
+            return None
+
+        # Always show if we have a valid handle
+        if not self.engagement_stats.my_handle or self.engagement_stats.my_handle == "unknown":
+            return None
+
+        width = min(self.console.width - 4, 60)
+        card = EngagementCard(self.engagement_stats, width=width)
+        return Align.center(card.render())
+
     def render_header(self) -> Text:
         """Render the header bar."""
         now = datetime.now().strftime("%H:%M:%S")
@@ -448,6 +562,12 @@ class MosaicDisplay:
             elements.append(vibe_section)
             elements.append(Text())
 
+        # Add engagement section
+        engagement_section = self.render_engagement_section()
+        if engagement_section:
+            elements.append(engagement_section)
+            elements.append(Text())
+
         if not tiles:
             elements.append(Align.center(Text("No tweets to display...", style="dim italic")))
         else:
@@ -494,11 +614,18 @@ class MosaicDisplay:
 
         return Group(*elements)
 
-    def update_tweets(self, tweets: list[FilteredTweet], vibes: list[TopicVibe] | None = None):
-        """Update with new tweets and vibes."""
+    def update_tweets(
+        self,
+        tweets: list[FilteredTweet],
+        vibes: list[TopicVibe] | None = None,
+        engagement_stats: MyEngagementStats | None = None,
+    ):
+        """Update with new tweets, vibes, and engagement stats."""
         self.tweets = sorted(tweets, key=lambda x: x.relevance_score, reverse=True)
         if vibes is not None:
             self.vibes = vibes
+        if engagement_stats is not None:
+            self.engagement_stats = engagement_stats
         self.last_refresh = time.time()
 
 
@@ -536,13 +663,18 @@ async def run_mosaic(
 
     set_terminal_title("Loading...")
     console.print("[dim]Fetching tweets for mosaic...[/dim]")
-    tweets = await fetch_func(count, threshold)
+    result = await fetch_func(count, threshold)
+    # fetch_func returns (tweets, my_handle) tuple
+    tweets, my_handle = result if isinstance(result, tuple) else (result, None)
 
     vibes = []
     if tweets and vibe_func:
         set_terminal_title("Analyzing...")
         console.print("[dim]Analyzing vibe of the day...[/dim]")
         vibes = vibe_func(tweets)
+
+    # Compute engagement stats
+    engagement_stats = compute_engagement_stats(tweets, my_handle) if tweets else None
 
     if not tweets:
         console.print("[yellow]No tweets found. Will retry on refresh.[/yellow]")
@@ -553,6 +685,7 @@ async def run_mosaic(
     mosaic = MosaicDisplay(
         tweets,
         vibes=vibes,
+        engagement_stats=engagement_stats,
         refresh_callback=fetch_func,
         refresh_interval=refresh_minutes * 60,
     )
@@ -574,10 +707,12 @@ async def run_mosaic(
                     elif key == 'r':
                         # Manual refresh
                         set_terminal_title("Refreshing...")
-                        new_tweets = await fetch_func(count, threshold)
+                        result = await fetch_func(count, threshold)
+                        new_tweets, new_handle = result if isinstance(result, tuple) else (result, my_handle)
                         new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
+                        new_stats = compute_engagement_stats(new_tweets, new_handle) if new_tweets else None
                         if new_tweets:
-                            mosaic.update_tweets(new_tweets, new_vibes)
+                            mosaic.update_tweets(new_tweets, new_vibes, new_stats)
                             set_terminal_title(get_insight(new_vibes, new_tweets))
                         last_refresh = now
                     elif key and key.isdigit() and key != '0':
@@ -590,10 +725,12 @@ async def run_mosaic(
                     # Auto refresh
                     if now - last_refresh >= refresh_minutes * 60:
                         set_terminal_title("Refreshing...")
-                        new_tweets = await fetch_func(count, threshold)
+                        result = await fetch_func(count, threshold)
+                        new_tweets, new_handle = result if isinstance(result, tuple) else (result, my_handle)
                         new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
+                        new_stats = compute_engagement_stats(new_tweets, new_handle) if new_tweets else None
                         if new_tweets:
-                            mosaic.update_tweets(new_tweets, new_vibes)
+                            mosaic.update_tweets(new_tweets, new_vibes, new_stats)
                             set_terminal_title(get_insight(new_vibes, new_tweets))
                         last_refresh = now
 
