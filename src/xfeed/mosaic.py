@@ -1,8 +1,13 @@
 """Block mosaic visualization for X feed."""
 
 import asyncio
+import sys
+import termios
 import time
+import tty
 from datetime import datetime
+from threading import Thread
+from queue import Queue, Empty
 
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
@@ -13,6 +18,47 @@ from rich.align import Align
 from rich import box
 
 from xfeed.models import FilteredTweet, TopicVibe
+
+
+class KeyboardListener:
+    """Non-blocking keyboard listener for terminal."""
+
+    def __init__(self):
+        self.queue: Queue[str] = Queue()
+        self._running = False
+        self._thread: Thread | None = None
+        self._old_settings = None
+
+    def start(self):
+        """Start listening for keypresses."""
+        self._running = True
+        self._old_settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+        self._thread = Thread(target=self._listen, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Stop listening and restore terminal."""
+        self._running = False
+        if self._old_settings:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
+
+    def _listen(self):
+        """Background thread that reads keypresses."""
+        while self._running:
+            try:
+                ch = sys.stdin.read(1)
+                if ch:
+                    self.queue.put(ch)
+            except Exception:
+                break
+
+    def get_key(self) -> str | None:
+        """Get a keypress if available, non-blocking."""
+        try:
+            return self.queue.get_nowait()
+        except Empty:
+            return None
 
 
 def get_block_style(score: int) -> tuple[str, str, str]:
@@ -229,25 +275,30 @@ class VibeCard:
         v = self.vibe
         lines = []
 
+        # Content width = panel width - 2 (borders) - 2 (padding)
+        content_width = self.width - 4
+
+        # Build header with proper cell-width truncation
+        # Emoji (2 cells) + space (1 cell) = 3 cells prefix
         header = Text()
         header.append(f"{v.emoji} ", style="bold")
-        header.append(truncate(v.topic, self.width - 8), style="bold bright_magenta")
+        topic_text = Text(v.topic, style="bold bright_magenta")
+        topic_text.truncate(content_width - 3, overflow="ellipsis")
+        header.append(topic_text)
         lines.append(header)
 
+        # Vibe line with cell-aware truncation
         vibe_line = Text()
-        vibe_line.append(v.vibe, style="italic cyan")
+        vibe_text = Text(v.vibe, style="italic cyan")
+        vibe_text.truncate(content_width - 6, overflow="ellipsis")  # Leave room for " (XX)"
+        vibe_line.append(vibe_text)
         vibe_line.append(f" ({v.tweet_count})", style="dim")
         lines.append(vibe_line)
 
-        # Wrap description
-        desc = v.description
-        desc_width = self.width - 4
-        if len(desc) > desc_width:
-            lines.append(Text(desc[:desc_width], style="white"))
-            if len(desc) > desc_width:
-                lines.append(Text(truncate(desc[desc_width:], desc_width), style="white"))
-        else:
-            lines.append(Text(desc, style="white"))
+        # Description with cell-aware truncation
+        desc_text = Text(v.description, style="white")
+        desc_text.truncate(content_width * 2, overflow="ellipsis")  # Allow 2 lines worth
+        lines.append(desc_text)
 
         body = Text("\n").join(lines)
 
@@ -407,7 +458,7 @@ class MosaicDisplay:
 
         elements.append(Text())
         elements.append(Align.center(self.render_legend()))
-        elements.append(Align.center(Text("Press Ctrl+C to exit", style="dim")))
+        elements.append(Align.center(Text("[q]uit  [r]efresh", style="dim")))
 
         return Group(*elements)
 
@@ -448,23 +499,41 @@ async def run_mosaic(
     )
 
     last_refresh = time.time()
+    keyboard = KeyboardListener()
+    keyboard.start()
 
-    with Live(mosaic.render(), console=console, refresh_per_second=2, screen=True) as live:
-        try:
-            while True:
-                now = time.time()
+    try:
+        with Live(mosaic.render(), console=console, refresh_per_second=2, screen=True) as live:
+            try:
+                while True:
+                    now = time.time()
 
-                if now - last_refresh >= refresh_minutes * 60:
-                    new_tweets = await fetch_func(count, threshold)
-                    new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
-                    if new_tweets:
-                        mosaic.update_tweets(new_tweets, new_vibes)
-                    last_refresh = now
+                    # Handle keyboard input
+                    key = keyboard.get_key()
+                    if key == 'q':
+                        break
+                    elif key == 'r':
+                        # Manual refresh
+                        new_tweets = await fetch_func(count, threshold)
+                        new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
+                        if new_tweets:
+                            mosaic.update_tweets(new_tweets, new_vibes)
+                        last_refresh = now
 
-                live.update(mosaic.render())
-                await asyncio.sleep(0.5)
+                    # Auto refresh
+                    if now - last_refresh >= refresh_minutes * 60:
+                        new_tweets = await fetch_func(count, threshold)
+                        new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
+                        if new_tweets:
+                            mosaic.update_tweets(new_tweets, new_vibes)
+                        last_refresh = now
 
-        except KeyboardInterrupt:
-            pass
+                    live.update(mosaic.render())
+                    await asyncio.sleep(0.5)
+
+            except KeyboardInterrupt:
+                pass
+    finally:
+        keyboard.stop()
 
     console.print("\n[dim]Mosaic stopped.[/dim]")
