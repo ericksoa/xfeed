@@ -94,6 +94,7 @@ class Notification:
     additional_count: int = 0  # "and N others"
     target_tweet_preview: str | None = None  # Preview of the tweet that was engaged with
     reply_content: str | None = None  # For replies: the actual reply text
+    reply_to_content: str | None = None  # For replies: the original tweet they're replying to
     reply_tone: str | None = None  # For replies: tone classification (e.g., "curious", "supportive", "hostile")
 
     @property

@@ -543,18 +543,24 @@ async def extract_notification_data(article, page: Page) -> Notification | None:
         # Get tweet preview and reply content if available
         tweet_preview = None
         reply_content = None
+        reply_to_content = None
 
-        # The notification text often contains content after the action description
+        # The notification text contains content after the action description
+        # For replies: typically shows original tweet first, then the reply
         lines = text.split("\n")
-        for line in lines[1:]:  # Skip first line which is the notification header
-            line = line.strip()
-            if len(line) > 10:
-                # For replies, this is likely the reply content
-                if notif_type == NotificationType.REPLY:
-                    reply_content = line[:200]  # Keep more for tone analysis
-                else:
-                    tweet_preview = line[:100]
-                break
+        content_lines = [line.strip() for line in lines[1:] if line.strip() and len(line.strip()) > 10]
+
+        if notif_type == NotificationType.REPLY:
+            # For replies, try to capture both the original and the reply
+            # X typically shows: [header] [original tweet] [reply]
+            if len(content_lines) >= 2:
+                reply_to_content = content_lines[0][:200]  # Original tweet
+                reply_content = content_lines[1][:200]     # Their reply
+            elif len(content_lines) == 1:
+                reply_content = content_lines[0][:200]
+        else:
+            if content_lines:
+                tweet_preview = content_lines[0][:100]
 
         return Notification(
             type=notif_type,
@@ -565,6 +571,7 @@ async def extract_notification_data(article, page: Page) -> Notification | None:
             additional_count=additional_count,
             target_tweet_preview=tweet_preview,
             reply_content=reply_content,
+            reply_to_content=reply_to_content,
         )
     except Exception:
         return None

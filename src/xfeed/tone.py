@@ -23,15 +23,14 @@ def analyze_reply_tones(notifications: list[Notification]) -> list[Notification]
     if not replies_with_content:
         return notifications
 
-    # Build the prompt
+    # Build the prompt with context
     replies_text = "\n".join([
-        f'{i}: "{n.reply_content}"'
+        f'{i}: Original: "{n.reply_to_content or "unknown"}"\n   Reply: "{n.reply_content}"'
         for i, n in replies_with_content
     ])
 
-    prompt = f"""For each reply, describe its tone in ONE word. Be creative and precise - capture the vibe.
+    prompt = f"""For each reply, describe its tone in ONE word considering the context of what they're replying to. Be creative and precise - capture the vibe.
 
-Replies:
 {replies_text}
 
 Respond with JSON mapping index to tone word:
