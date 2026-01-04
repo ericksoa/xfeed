@@ -34,9 +34,25 @@ class KeyboardListener:
         """Start listening for keypresses."""
         if self._running:
             return  # Already running
+
+        # Wait for old thread to finish if it exists
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+
+        # Clear any stale keys from queue
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+
         self._running = True
-        self._old_settings = termios.tcgetattr(sys.stdin)
-        tty.setcbreak(sys.stdin.fileno())
+        try:
+            self._old_settings = termios.tcgetattr(sys.stdin)
+            tty.setcbreak(sys.stdin.fileno())
+        except Exception:
+            pass  # Terminal might already be in right state
+
         self._thread = Thread(target=self._listen, daemon=True)
         self._thread.start()
 
@@ -44,7 +60,10 @@ class KeyboardListener:
         """Stop listening and restore terminal."""
         self._running = False
         if self._old_settings:
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
+            except Exception:
+                pass  # Terminal might be in weird state
             self._old_settings = None
 
     def _listen(self):
@@ -53,13 +72,14 @@ class KeyboardListener:
         while self._running:
             try:
                 # Use select with timeout so we can check _running periodically
-                readable, _, _ = select.select([sys.stdin], [], [], 0.1)
-                if readable:
+                readable, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if readable and self._running:
                     ch = sys.stdin.read(1)
                     if ch:
                         self.queue.put(ch)
             except Exception:
-                break
+                if not self._running:
+                    break  # Expected during shutdown
 
     def get_key(self) -> str | None:
         """Get a keypress if available, non-blocking."""
@@ -883,7 +903,7 @@ async def run_mosaic(
     keyboard.start()
 
     try:
-        with Live(mosaic.render(), console=console, refresh_per_second=2, screen=True) as live:
+        with Live(mosaic.render(), console=console, refresh_per_second=4, screen=True) as live:
             try:
                 while True:
                     now = time.time()
