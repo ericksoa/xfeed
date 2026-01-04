@@ -17,7 +17,7 @@ xfeed mosaic
 
 On first run, xfeed will:
 1. Prompt for your [Anthropic API key](https://console.anthropic.com/)
-2. Auto-install the browser needed for scraping
+2. Auto-install the browser component
 3. Create a default objectives file at `~/.xfeed/objectives.md`
 
 **Prerequisite**: You must be logged into X (twitter.com) in Chrome, Firefox, or Safari.

@@ -59,7 +59,7 @@ xfeed config --show
 ## How It Works
 
 1. Extracts X session cookies from Chrome browser
-2. Uses Playwright to scrape home timeline
+2. Uses Playwright to fetch your home timeline
 3. Sends tweets in batches to Claude Haiku for relevance scoring
 4. Displays tweets scoring above threshold (default: 7/10)
 5. Shows relevance reason for each tweet

@@ -283,7 +283,7 @@ def ticker(rotate: int, refresh: int, count: int, threshold: int, compact: bool)
 @click.option("--refresh", "-r", default=5, help="Minutes between refresh (default: 5)")
 @click.option("--count", "-n", default=20, help="Tweets to fetch (default: 20)")
 @click.option("--threshold", "-t", default=5, help="Relevance threshold (default: 5)")
-@click.option("--engagement/--no-engagement", default=True, help="Scrape notifications for engagement data")
+@click.option("--engagement/--no-engagement", default=True, help="Fetch notifications for engagement data")
 def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
     """Block mosaic visualization - tweets sized by relevance.
 

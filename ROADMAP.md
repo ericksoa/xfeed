@@ -101,7 +101,7 @@ Color-code tiles by sentiment in addition to relevance. Distinguish excited/opti
 
 ## Completed Features
 
-- [x] Home timeline scraping with Playwright
+- [x] Home timeline fetching with Playwright
 - [x] Claude Haiku relevance filtering with custom objectives
 - [x] Rich terminal mosaic visualization
 - [x] Engagement tracking (notifications, profile tweets)
