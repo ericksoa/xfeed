@@ -1091,11 +1091,12 @@ async def run_mosaic(
                                 vibe_task_data = (new_tweets, new_handle, new_profile, new_notifs)
                             else:
                                 # No vibes needed, finish refresh now
+                                # Always compute engagement stats (even without tweets, we have notifications)
                                 new_stats = compute_engagement_stats(
                                     new_tweets, new_handle, new_notifs, new_profile
-                                ) if new_tweets else None
+                                )
+                                mosaic.update_tweets(new_tweets, [], new_stats)
                                 if new_tweets:
-                                    mosaic.update_tweets(new_tweets, [], new_stats)
                                     set_terminal_title(get_insight([], new_tweets))
                                 last_refresh = now
                                 refresh_task = None
@@ -1113,11 +1114,12 @@ async def run_mosaic(
                             new_vibes = vibe_task.result()
                             new_tweets, new_handle, new_profile, new_notifs = vibe_task_data
 
+                            # Always compute engagement stats (notifications provide engagement data)
                             new_stats = compute_engagement_stats(
                                 new_tweets, new_handle, new_notifs, new_profile
-                            ) if new_tweets else None
+                            )
+                            mosaic.update_tweets(new_tweets, new_vibes, new_stats)
                             if new_tweets:
-                                mosaic.update_tweets(new_tweets, new_vibes, new_stats)
                                 set_terminal_title(get_insight(new_vibes, new_tweets))
                             last_refresh = now
                         except Exception as e:
