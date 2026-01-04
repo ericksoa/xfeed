@@ -601,6 +601,7 @@ class MosaicDisplay:
         # Refresh state (updated by run_mosaic)
         self.is_refreshing = False
         self.refresh_elapsed = 0
+        self.refresh_phase = ""
 
         # Initial loading state
         self.is_initial_load = len(tweets) == 0
@@ -712,7 +713,8 @@ class MosaicDisplay:
         header.append(f"  │  threshold: {self.threshold}+", style="cyan")
         header.append(f"  │  count: {self.count}", style="cyan")
         if self.is_refreshing:
-            header.append(f"  │  ⟳ refreshing ({self.refresh_elapsed}s)", style="bold yellow")
+            phase_text = self.refresh_phase if self.refresh_phase else "refreshing"
+            header.append(f"  │  ⟳ {phase_text} ({self.refresh_elapsed}s)", style="bold yellow")
         else:
             header.append(f"  │  refresh in {int(next_refresh)}s", style="dim")
         header.append(f"  │  {displayed} showing", style="dim")
@@ -1049,7 +1051,14 @@ async def run_mosaic(
                         try:
                             result = refresh_task.result()
                             new_tweets, new_handle, new_profile, new_notifs = parse_fetch_result(result, my_handle)
-                            new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
+
+                            # Extract vibes (update phase while doing so)
+                            new_vibes = []
+                            if vibe_func and new_tweets:
+                                mosaic.refresh_phase = "extracting vibes"
+                                live.update(mosaic.render())
+                                new_vibes = vibe_func(new_tweets)
+
                             new_stats = compute_engagement_stats(
                                 new_tweets, new_handle, new_notifs, new_profile
                             ) if new_tweets else None
@@ -1062,6 +1071,7 @@ async def run_mosaic(
                             set_terminal_title(f"Error: {e}")
                         refresh_task = None
                         mosaic.is_refreshing = False
+                        mosaic.refresh_phase = ""
 
                     # Handle keyboard input - process all queued keys
                     keys = keyboard.drain_keys()
@@ -1102,6 +1112,7 @@ async def run_mosaic(
                         refresh_started = now
                         mosaic.is_refreshing = True
                         mosaic.refresh_elapsed = 0
+                        mosaic.refresh_phase = "fetching & scoring"
                         refresh_task = asyncio.create_task(
                             do_refresh(mosaic.count, mosaic.threshold)
                         )
