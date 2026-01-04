@@ -27,7 +27,7 @@ from xfeed.config import (
 )
 from xfeed.filter import filter_tweets
 from xfeed.models import FilteredTweet
-from xfeed.scraper import scrape_timeline, scrape_all_engagement
+from xfeed.fetcher import fetch_timeline, fetch_all_engagement
 
 
 console = Console()
@@ -104,7 +104,7 @@ def fetch(count: int, threshold: int | None, raw: bool, json_output: bool):
         task = progress.add_task("Fetching tweets from X...", total=None)
 
         try:
-            tweets, _my_handle = asyncio.run(scrape_timeline(
+            tweets, _my_handle = asyncio.run(fetch_timeline(
                 count=count,
                 headless=True,
                 on_progress=lambda current, total: progress.update(
@@ -256,7 +256,7 @@ def ticker(rotate: int, refresh: int, count: int, threshold: int, compact: bool)
     async def fetch_filtered(count: int, threshold: int):
         """Fetch and filter tweets."""
         try:
-            tweets, _my_handle = await scrape_timeline(count=count, headless=True)
+            tweets, _my_handle = await fetch_timeline(count=count, headless=True)
             if not tweets:
                 return []
             return filter_tweets(tweets, threshold=threshold)
@@ -302,8 +302,8 @@ def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
         """Fetch and filter tweets with engagement data."""
         try:
             if engagement:
-                # Scrape all three: home, profile, notifications
-                home_tweets, profile_tweets, notifications, my_handle = await scrape_all_engagement(
+                # Fetch all three: home, profile, notifications
+                home_tweets, profile_tweets, notifications, my_handle = await fetch_all_engagement(
                     home_count=count,
                     profile_count=10,
                     notifications_count=30,
@@ -315,7 +315,7 @@ def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
                 return filtered, my_handle, profile_tweets, notifications
             else:
                 # Just home timeline
-                tweets, my_handle = await scrape_timeline(count=count, headless=True)
+                tweets, my_handle = await fetch_timeline(count=count, headless=True)
                 if not tweets:
                     return [], my_handle, [], []
                 return filter_tweets(tweets, threshold=threshold), my_handle, [], []
@@ -389,7 +389,7 @@ def watch(interval: int, count: int, threshold: int, top: int):
     async def fetch_and_print():
         """Fetch tweets and print update."""
         try:
-            tweets, _my_handle = await scrape_timeline(count=count, headless=True)
+            tweets, _my_handle = await fetch_timeline(count=count, headless=True)
             if tweets:
                 filtered = filter_tweets(tweets, threshold=threshold)
                 print_update(filtered)

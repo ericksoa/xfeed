@@ -65,7 +65,7 @@ NOT a superdunk: simple mockery, "ratio" attempts, pile-ons.
 
 EXCLUSION RULES:
 If a tweet matches any "Exclude" criteria, score it 0-1 regardless of other content.
-Exclusions apply even to unknown/new accounts - exploration is not a bypass for quality.
+Exclusions apply even to unknown/new accounts - exploration does not override quality filters.
 
 Respond with a JSON array in this exact format:
 [

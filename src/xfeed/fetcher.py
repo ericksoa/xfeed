@@ -1,4 +1,4 @@
-"""X timeline scraper using Playwright."""
+"""X timeline fetcher using Playwright."""
 
 import asyncio
 import random
@@ -14,7 +14,7 @@ from xfeed.models import Tweet, QuotedTweet, Notification, NotificationType
 # =============================================================================
 # Timing and pacing settings
 # =============================================================================
-# Variable delays for natural pacing during scraping.
+# Variable delays for natural pacing during fetching.
 # All times are in milliseconds unless noted.
 
 # Scroll delays: variable intervals between scrolls
@@ -35,11 +35,11 @@ READ_PAUSE_CHANCE = 0.15  # 15% chance to pause and "read"
 READ_PAUSE_MIN = 2000
 READ_PAUSE_MAX = 5000
 
-# Rate limiting: minimum time between full scrape sessions (seconds)
-MIN_SCRAPE_INTERVAL = 120  # 2 minutes minimum between full refreshes
+# Rate limiting: minimum time between full fetch sessions (seconds)
+MIN_FETCH_INTERVAL = 120  # 2 minutes minimum between full refreshes
 
-# Track last scrape time for rate limiting
-_last_scrape_time: datetime | None = None
+# Track last fetch time for rate limiting
+_last_fetch_time: datetime | None = None
 
 
 def _scroll_delay() -> int:
@@ -69,17 +69,17 @@ def _jitter(base_seconds: int, jitter_pct: float = 0.2) -> int:
 
 def _check_rate_limit() -> bool:
     """Check if we should rate limit. Returns True if OK to proceed."""
-    global _last_scrape_time
-    if _last_scrape_time is None:
+    global _last_fetch_time
+    if _last_fetch_time is None:
         return True
-    elapsed = (datetime.now() - _last_scrape_time).total_seconds()
-    return elapsed >= MIN_SCRAPE_INTERVAL
+    elapsed = (datetime.now() - _last_fetch_time).total_seconds()
+    return elapsed >= MIN_FETCH_INTERVAL
 
 
-def _update_scrape_time():
-    """Update the last scrape timestamp."""
-    global _last_scrape_time
-    _last_scrape_time = datetime.now()
+def _update_fetch_time():
+    """Update the last fetch timestamp."""
+    global _last_fetch_time
+    _last_fetch_time = datetime.now()
 
 
 # =============================================================================
@@ -100,8 +100,8 @@ QUOTE_TWEET_ALT_SELECTOR = 'div[role="link"][tabindex="0"]'  # Fallback
 PROFILE_LINK_SELECTOR = 'a[data-testid="AppTabBar_Profile_Link"]'
 
 
-def get_x_cookies_from_chrome() -> list[dict]:
-    """Extract X/Twitter cookies from Chrome browser."""
+def get_x_session_from_chrome() -> list[dict]:
+    """Get X/Twitter session from Chrome browser."""
     try:
         cj = browser_cookie3.chrome(domain_name=".x.com")
         cookies = []
@@ -336,13 +336,13 @@ async def extract_tweet_data(article, page: Page, my_handle: str | None = None) 
         return None
 
 
-async def scrape_timeline(
+async def fetch_timeline(
     count: int = 50,
     headless: bool = True,
     on_progress: callable = None,
 ) -> tuple[list[Tweet], str | None]:
     """
-    Scrape tweets from the X home timeline using Chrome cookies.
+    Fetch tweets from the X home timeline using Chrome session.
 
     Args:
         count: Number of tweets to fetch
@@ -355,8 +355,8 @@ async def scrape_timeline(
     tweets: dict[str, Tweet] = {}
     my_handle: str | None = None
 
-    # Extract cookies from Chrome
-    cookies = get_x_cookies_from_chrome()
+    # Get session from Chrome
+    cookies = get_x_session_from_chrome()
     if not cookies:
         raise RuntimeError(
             "Not logged into X. Please log in to x.com in Chrome first."
@@ -413,7 +413,7 @@ async def scrape_timeline(
 
         await browser.close()
 
-    _update_scrape_time()
+    _update_fetch_time()
     return list(tweets.values())[:count], my_handle
 
 
@@ -518,13 +518,13 @@ async def extract_notification_data(article, page: Page) -> Notification | None:
         return None
 
 
-async def scrape_notifications(
+async def fetch_notifications(
     count: int = 50,
     headless: bool = True,
     on_progress: callable = None,
 ) -> list[Notification]:
     """
-    Scrape notifications from the X notifications page.
+    Fetch notifications from the X notifications page.
 
     Args:
         count: Number of notifications to fetch
@@ -536,7 +536,7 @@ async def scrape_notifications(
     """
     notifications: list[Notification] = []
 
-    cookies = get_x_cookies_from_chrome()
+    cookies = get_x_session_from_chrome()
     if not cookies:
         raise RuntimeError("Not logged into X. Please log in to x.com in Chrome first.")
 
@@ -588,21 +588,21 @@ async def scrape_notifications(
 
         await browser.close()
 
-    _update_scrape_time()
+    _update_fetch_time()
     return notifications[:count]
 
 
-async def scrape_profile_timeline(
+async def fetch_profile_timeline(
     username: str,
     count: int = 20,
     headless: bool = True,
     on_progress: callable = None,
 ) -> list[Tweet]:
     """
-    Scrape tweets from a user's profile timeline.
+    Fetch tweets from a user's profile timeline.
 
     Args:
-        username: The username to scrape (without @)
+        username: The username to fetch (without @)
         count: Number of tweets to fetch
         headless: Run browser in headless mode
         on_progress: Callback function for progress updates
@@ -613,7 +613,7 @@ async def scrape_profile_timeline(
     tweets: dict[str, Tweet] = {}
     username = username.lstrip("@")
 
-    cookies = get_x_cookies_from_chrome()
+    cookies = get_x_session_from_chrome()
     if not cookies:
         raise RuntimeError("Not logged into X. Please log in to x.com in Chrome first.")
 
@@ -661,11 +661,11 @@ async def scrape_profile_timeline(
 
         await browser.close()
 
-    _update_scrape_time()
+    _update_fetch_time()
     return list(tweets.values())[:count]
 
 
-async def scrape_all_engagement(
+async def fetch_all_engagement(
     home_count: int = 20,
     profile_count: int = 10,
     notifications_count: int = 30,
@@ -673,7 +673,7 @@ async def scrape_all_engagement(
     on_progress: callable = None,
 ) -> tuple[list[Tweet], list[Tweet], list[Notification], str | None]:
     """
-    Scrape home timeline, profile timeline, and notifications in a single session.
+    Fetch home timeline, profile timeline, and notifications in a single session.
     Uses variable delays between actions for reliability.
 
     Returns:
@@ -684,7 +684,7 @@ async def scrape_all_engagement(
     notifications: list[Notification] = []
     my_handle: str | None = None
 
-    cookies = get_x_cookies_from_chrome()
+    cookies = get_x_session_from_chrome()
     if not cookies:
         raise RuntimeError("Not logged into X. Please log in to x.com in Chrome first.")
 
@@ -697,7 +697,7 @@ async def scrape_all_engagement(
         await context.add_cookies(cookies)
         page = await context.new_page()
 
-        # 1. Scrape home timeline
+        # 1. Fetch home timeline
         if on_progress:
             on_progress("home", 0, home_count)
 
@@ -726,7 +726,7 @@ async def scrape_all_engagement(
             await page.wait_for_timeout(_scroll_delay())
             scroll_count += 1
 
-        # 2. Scrape profile timeline (with navigation pause)
+        # 2. Fetch profile timeline (with navigation pause)
         if my_handle and profile_count > 0:
             # Pause before navigating like a human would
             await page.wait_for_timeout(_nav_delay())
@@ -755,7 +755,7 @@ async def scrape_all_engagement(
                 await page.wait_for_timeout(_scroll_delay())
                 scroll_count += 1
 
-        # 3. Scrape notifications (with navigation pause)
+        # 3. Fetch notifications (with navigation pause)
         if notifications_count > 0:
             # Pause before navigating like a human would
             await page.wait_for_timeout(_nav_delay())
@@ -792,7 +792,7 @@ async def scrape_all_engagement(
 
         await browser.close()
 
-    _update_scrape_time()
+    _update_fetch_time()
     return (
         list(home_tweets.values())[:home_count],
         list(profile_tweets.values())[:profile_count],

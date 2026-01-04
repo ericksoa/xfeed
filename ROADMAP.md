@@ -9,7 +9,7 @@ A curated list of improvements to make xfeed the best X client for cutting throu
 ### Serendipity / Exploration Mode
 Prevent the feed from becoming an echo chamber of the same 20 accounts.
 
-- Inject a small percentage of candidates from unknown/new accounts
+- Include a small percentage of candidates from unknown/new accounts
 - Only when the post demonstrates technical depth or strong reasoning
 - Bounded by: low frequency, diversity-aware, strict anti-manipulation filters
 - **Config knobs**:

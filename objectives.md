@@ -58,7 +58,7 @@ Allow discovery of valuable new voices without letting in noise:
   - Clear reasoning with mechanisms explained
   - Evidence, citations, or links to primary sources
 - Unknown accounts that score well should be flagged as "exploration" candidates
-- Still apply all exclusion rules - exploration is not a bypass
+- Still apply all exclusion rules - exploration does not override quality filters
 
 **Anti-gaming:**
 - No engagement farming patterns even from new accounts

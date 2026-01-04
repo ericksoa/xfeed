@@ -5,7 +5,7 @@
 ### Features Added
 
 #### 1. Serendipity / Exploration Mode
-- Injects high-quality tweets from unknown/new authors at configurable rate
+- Includes high-quality tweets from unknown/new authors at configurable rate
 - Bounded by: minimum quality threshold, author cooldown, diversity sampling
 - Exploration candidates are sampled AFTER base exclusion filtering
 - Maximum N exploration posts per refresh (default: 10% of feed)
