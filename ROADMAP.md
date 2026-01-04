@@ -69,7 +69,7 @@ Collapse duplicate content: same link shared by multiple people, quote tweets of
 Press `[s]` to save tweet to local SQLite database. `xfeed saved` command to review later. Export to markdown for sharing or archival.
 
 ### 7. Quick Actions
-`[l]ike`, `[R]etweet` directly from mosaic. Requires extending cookie auth for write access. Risky but powerful for engagement workflow.
+`[l]ike`, `[R]etweet` directly from mosaic. Requires write access via browser session. Powerful for engagement workflow.
 
 ### 8. Multiple Objective Profiles
 `xfeed mosaic --profile work` vs `--profile learning`. Different objectives files for different contexts. Switch profiles with `[p]` key while running.

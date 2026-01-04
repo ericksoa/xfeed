@@ -130,7 +130,7 @@ def get_x_cookies_from_chrome() -> list[dict]:
         return cookies
     except Exception as e:
         raise RuntimeError(
-            f"Could not extract cookies from Chrome: {e}\n"
+            f"Could not access Chrome session: {e}\n"
             "Make sure you are logged into x.com in Chrome."
         )
 
@@ -359,7 +359,7 @@ async def scrape_timeline(
     cookies = get_x_cookies_from_chrome()
     if not cookies:
         raise RuntimeError(
-            "No X cookies found in Chrome. Please log in to x.com in Chrome first."
+            "Not logged into X. Please log in to x.com in Chrome first."
         )
 
     async with async_playwright() as p:
@@ -538,7 +538,7 @@ async def scrape_notifications(
 
     cookies = get_x_cookies_from_chrome()
     if not cookies:
-        raise RuntimeError("No X cookies found in Chrome.")
+        raise RuntimeError("Not logged into X. Please log in to x.com in Chrome first.")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
@@ -615,7 +615,7 @@ async def scrape_profile_timeline(
 
     cookies = get_x_cookies_from_chrome()
     if not cookies:
-        raise RuntimeError("No X cookies found in Chrome.")
+        raise RuntimeError("Not logged into X. Please log in to x.com in Chrome first.")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
@@ -686,7 +686,7 @@ async def scrape_all_engagement(
 
     cookies = get_x_cookies_from_chrome()
     if not cookies:
-        raise RuntimeError("No X cookies found in Chrome.")
+        raise RuntimeError("Not logged into X. Please log in to x.com in Chrome first.")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)

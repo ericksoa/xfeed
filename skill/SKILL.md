@@ -86,6 +86,6 @@ Each tweet shows:
 
 ## Troubleshooting
 
-**"No cookies found"**: Log into x.com in Chrome first
+**"Not logged in"**: Log into x.com in Chrome first
 **"Not logged in"**: Your X session expired, log in again in Chrome
 **API errors**: Check Anthropic API key in `.env`
