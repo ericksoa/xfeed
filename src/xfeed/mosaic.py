@@ -597,6 +597,10 @@ class MosaicDisplay:
         self.count = count
         self.count_options = [10, 20, 50, 100]
 
+        # Refresh state (updated by run_mosaic)
+        self.is_refreshing = False
+        self.refresh_elapsed = 0
+
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for tweets with shortcut numbers."""
         tiles = []
@@ -701,7 +705,10 @@ class MosaicDisplay:
         header.append(f"  {now}", style="dim")
         header.append(f"  │  threshold: {self.threshold}+", style="cyan")
         header.append(f"  │  count: {self.count}", style="cyan")
-        header.append(f"  │  refresh in {int(next_refresh)}s", style="dim")
+        if self.is_refreshing:
+            header.append(f"  │  ⟳ refreshing ({self.refresh_elapsed}s)", style="bold yellow")
+        else:
+            header.append(f"  │  refresh in {int(next_refresh)}s", style="dim")
         header.append(f"  │  {displayed} showing", style="dim")
 
         return header
@@ -902,11 +909,38 @@ async def run_mosaic(
     keyboard = KeyboardListener()
     keyboard.start()
 
+    # Background refresh state
+    refresh_task: asyncio.Task | None = None
+    refresh_started: float = 0
+
+    async def do_refresh(cnt: int, thresh: int):
+        """Perform refresh in background."""
+        return await fetch_func(cnt, thresh)
+
     try:
         with Live(mosaic.render(), console=console, refresh_per_second=4, screen=True) as live:
             try:
                 while True:
                     now = time.time()
+
+                    # Check if background refresh completed
+                    if refresh_task is not None and refresh_task.done():
+                        try:
+                            result = refresh_task.result()
+                            new_tweets, new_handle, new_profile, new_notifs = parse_fetch_result(result, my_handle)
+                            new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
+                            new_stats = compute_engagement_stats(
+                                new_tweets, new_handle, new_notifs, new_profile
+                            ) if new_tweets else None
+                            if new_tweets:
+                                mosaic.update_tweets(new_tweets, new_vibes, new_stats)
+                                set_terminal_title(get_insight(new_vibes, new_tweets))
+                            last_refresh = now
+                        except Exception as e:
+                            # Refresh failed, will retry next interval
+                            set_terminal_title(f"Error: {e}")
+                        refresh_task = None
+                        mosaic.is_refreshing = False
 
                     # Handle keyboard input - process all queued keys
                     keys = keyboard.drain_keys()
@@ -940,33 +974,22 @@ async def run_mosaic(
                     if should_quit:
                         break
 
-                    if should_refresh:
-                        # Manual refresh (uses current mosaic settings)
+                    # Start background refresh if needed (manual or auto)
+                    need_auto_refresh = now - last_refresh >= refresh_minutes * 60
+                    if (should_refresh or need_auto_refresh) and refresh_task is None:
                         set_terminal_title("Refreshing...")
-                        result = await fetch_func(mosaic.count, mosaic.threshold)
-                        new_tweets, new_handle, new_profile, new_notifs = parse_fetch_result(result, my_handle)
-                        new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
-                        new_stats = compute_engagement_stats(
-                            new_tweets, new_handle, new_notifs, new_profile
-                        ) if new_tweets else None
-                        if new_tweets:
-                            mosaic.update_tweets(new_tweets, new_vibes, new_stats)
-                            set_terminal_title(get_insight(new_vibes, new_tweets))
-                        last_refresh = now
+                        refresh_started = now
+                        mosaic.is_refreshing = True
+                        mosaic.refresh_elapsed = 0
+                        refresh_task = asyncio.create_task(
+                            do_refresh(mosaic.count, mosaic.threshold)
+                        )
 
-                    # Auto refresh (uses current mosaic settings)
-                    if now - last_refresh >= refresh_minutes * 60:
-                        set_terminal_title("Refreshing...")
-                        result = await fetch_func(mosaic.count, mosaic.threshold)
-                        new_tweets, new_handle, new_profile, new_notifs = parse_fetch_result(result, my_handle)
-                        new_vibes = vibe_func(new_tweets) if vibe_func and new_tweets else []
-                        new_stats = compute_engagement_stats(
-                            new_tweets, new_handle, new_notifs, new_profile
-                        ) if new_tweets else None
-                        if new_tweets:
-                            mosaic.update_tweets(new_tweets, new_vibes, new_stats)
-                            set_terminal_title(get_insight(new_vibes, new_tweets))
-                        last_refresh = now
+                    # Update refresh progress if refreshing
+                    if refresh_task is not None:
+                        elapsed = int(now - refresh_started)
+                        mosaic.refresh_elapsed = elapsed
+                        set_terminal_title(f"Refreshing... ({elapsed}s)")
 
                     live.update(mosaic.render())
                     await asyncio.sleep(0.1)  # Fast loop for responsive keyboard
@@ -974,6 +997,13 @@ async def run_mosaic(
             except KeyboardInterrupt:
                 pass
     finally:
+        # Cancel any pending refresh task
+        if refresh_task is not None and not refresh_task.done():
+            refresh_task.cancel()
+            try:
+                await refresh_task
+            except asyncio.CancelledError:
+                pass
         keyboard.stop()
         # Restore default terminal title
         sys.stdout.write("\033]0;\007")
