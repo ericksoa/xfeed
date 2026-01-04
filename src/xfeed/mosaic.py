@@ -991,6 +991,8 @@ async def run_mosaic(
     refresh_task: asyncio.Task | None = None
     refresh_started: float = 0
     my_handle = None
+    vibe_task = None
+    vibe_task_data = None
 
     async def do_refresh(cnt: int, thresh: int):
         """Perform refresh in background."""
@@ -999,6 +1001,7 @@ async def run_mosaic(
     async def do_initial_load():
         """Perform initial load with phase updates."""
         nonlocal my_handle
+        loop = asyncio.get_event_loop()
 
         # Phase 1: Fetch from X and score with Claude Haiku
         mosaic.load_phase = "Fetching & scoring tweets..."
@@ -1006,12 +1009,12 @@ async def run_mosaic(
         result = await fetch_func(count, threshold)
         tweets, my_handle, profile_tweets, notifications = parse_fetch_result(result)
 
-        # Phase 2: Extract vibes/topics
+        # Phase 2: Extract vibes/topics (run in executor to not block UI)
         vibes = []
         if tweets and vibe_func:
             mosaic.load_phase = "Extracting vibes..."
             mosaic.load_start_time = time.time()  # Reset timer for this phase
-            vibes = vibe_func(tweets)
+            vibes = await loop.run_in_executor(None, vibe_func, tweets)
 
         # Phase 3: Build display (fast)
         mosaic.load_phase = "Building mosaic..."
@@ -1046,18 +1049,41 @@ async def run_mosaic(
                             mosaic.is_initial_load = False
                         initial_load_task = None
 
-                    # Check if background refresh completed
-                    if refresh_task is not None and refresh_task.done():
+                    # Check if background refresh completed (but vibe extraction still pending)
+                    if refresh_task is not None and refresh_task.done() and vibe_task is None:
                         try:
                             result = refresh_task.result()
                             new_tweets, new_handle, new_profile, new_notifs = parse_fetch_result(result, my_handle)
 
-                            # Extract vibes (update phase while doing so)
-                            new_vibes = []
+                            # Start vibe extraction in background
                             if vibe_func and new_tweets:
                                 mosaic.refresh_phase = "extracting vibes"
-                                live.update(mosaic.render())
-                                new_vibes = vibe_func(new_tweets)
+                                loop = asyncio.get_event_loop()
+                                vibe_task = loop.run_in_executor(None, vibe_func, new_tweets)
+                                vibe_task_data = (new_tweets, new_handle, new_profile, new_notifs)
+                            else:
+                                # No vibes needed, finish refresh now
+                                new_stats = compute_engagement_stats(
+                                    new_tweets, new_handle, new_notifs, new_profile
+                                ) if new_tweets else None
+                                if new_tweets:
+                                    mosaic.update_tweets(new_tweets, [], new_stats)
+                                    set_terminal_title(get_insight([], new_tweets))
+                                last_refresh = now
+                                refresh_task = None
+                                mosaic.is_refreshing = False
+                                mosaic.refresh_phase = ""
+                        except Exception as e:
+                            set_terminal_title(f"Error: {e}")
+                            refresh_task = None
+                            mosaic.is_refreshing = False
+                            mosaic.refresh_phase = ""
+
+                    # Check if vibe extraction completed
+                    if vibe_task is not None and vibe_task.done():
+                        try:
+                            new_vibes = vibe_task.result()
+                            new_tweets, new_handle, new_profile, new_notifs = vibe_task_data
 
                             new_stats = compute_engagement_stats(
                                 new_tweets, new_handle, new_notifs, new_profile
@@ -1067,8 +1093,9 @@ async def run_mosaic(
                                 set_terminal_title(get_insight(new_vibes, new_tweets))
                             last_refresh = now
                         except Exception as e:
-                            # Refresh failed, will retry next interval
                             set_terminal_title(f"Error: {e}")
+                        vibe_task = None
+                        vibe_task_data = None
                         refresh_task = None
                         mosaic.is_refreshing = False
                         mosaic.refresh_phase = ""
@@ -1141,6 +1168,11 @@ async def run_mosaic(
             try:
                 await refresh_task
             except asyncio.CancelledError:
+                pass
+        if vibe_task is not None:
+            try:
+                vibe_task.cancel()
+            except Exception:
                 pass
         keyboard.stop()
         # Restore default terminal title

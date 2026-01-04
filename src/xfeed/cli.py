@@ -300,6 +300,9 @@ def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
 
     async def fetch_filtered(count: int, threshold: int):
         """Fetch and filter tweets with engagement data."""
+        import functools
+        loop = asyncio.get_event_loop()
+
         try:
             if engagement:
                 # Fetch all three: home, profile, notifications
@@ -311,14 +314,21 @@ def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
                 )
                 if not home_tweets:
                     return [], my_handle, profile_tweets, notifications
-                filtered = filter_tweets(home_tweets, threshold=threshold)
+                # Run filter in executor to not block UI
+                filtered = await loop.run_in_executor(
+                    None, functools.partial(filter_tweets, home_tweets, threshold=threshold)
+                )
                 return filtered, my_handle, profile_tweets, notifications
             else:
                 # Just home timeline
                 tweets, my_handle = await fetch_timeline(count=count, headless=True)
                 if not tweets:
                     return [], my_handle, [], []
-                return filter_tweets(tweets, threshold=threshold), my_handle, [], []
+                # Run filter in executor to not block UI
+                filtered = await loop.run_in_executor(
+                    None, functools.partial(filter_tweets, tweets, threshold=threshold)
+                )
+                return filtered, my_handle, [], []
         except Exception as e:
             console.print(f"[red]Fetch error:[/red] {e}")
             return [], None, [], []
