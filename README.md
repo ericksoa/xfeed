@@ -89,6 +89,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 All config is stored in `~/.xfeed/`:
+- `.env` - API key (chmod 600)
 - `config.yaml` - Settings
 - `objectives.md` - Your interests
 

@@ -17,6 +17,7 @@ load_dotenv(Path.home() / ".xfeed" / ".env")  # Config directory
 
 CONFIG_DIR = Path.home() / ".xfeed"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
+ENV_FILE = CONFIG_DIR / ".env"
 COOKIES_FILE = CONFIG_DIR / "cookies.json"
 OBJECTIVES_FILE = CONFIG_DIR / "objectives.md"
 
@@ -103,10 +104,15 @@ def get_api_key() -> str | None:
 
 
 def set_api_key(api_key: str) -> None:
-    """Save Anthropic API key to config."""
-    config = load_config()
-    config["anthropic_api_key"] = api_key
-    save_config(config)
+    """Save Anthropic API key to .env file."""
+    ensure_config_dir()
+
+    # Write to .env file with restricted permissions
+    ENV_FILE.write_text(f"ANTHROPIC_API_KEY={api_key}\n")
+    ENV_FILE.chmod(0o600)  # Owner read/write only
+
+    # Also set in environment for current session
+    os.environ["ANTHROPIC_API_KEY"] = api_key
 
 
 def load_cookies() -> dict | None:
@@ -190,7 +196,7 @@ def prompt_for_api_key() -> str | None:
     print("=" * 60)
     print("\nTo filter your timeline, xfeed needs an Anthropic API key.")
     print("Get one at: https://console.anthropic.com/")
-    print("\nThe key will be saved to ~/.xfeed/config.yaml")
+    print("\nThe key will be saved to ~/.xfeed/.env (permissions: 600)")
     print("You can also set ANTHROPIC_API_KEY environment variable.\n")
 
     try:
