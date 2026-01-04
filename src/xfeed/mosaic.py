@@ -412,9 +412,22 @@ class VibeCard:
 class EngagementCard:
     """A card displaying user's engagement stats with notifications."""
 
+    PAGE_DURATION = 5.0  # Seconds per page of notifications
+    NOTIFICATIONS_PER_PAGE = 4
+
     def __init__(self, stats: MyEngagementStats, width: int = 60):
         self.stats = stats
         self.width = width
+        # Calculate total pages
+        total_notifs = len(stats.recent_notifications) if stats.recent_notifications else 0
+        self.total_pages = max(1, (total_notifs + self.NOTIFICATIONS_PER_PAGE - 1) // self.NOTIFICATIONS_PER_PAGE)
+
+    def get_current_page(self, time_now: float) -> int:
+        """Get the current page index based on time."""
+        if self.total_pages <= 1:
+            return 0
+        cycle_position = (time_now / self.PAGE_DURATION) % self.total_pages
+        return int(cycle_position)
 
     def _format_notification(self, n: Notification) -> Text:
         """Format a single notification for display (single line, no wrap)."""
@@ -478,7 +491,7 @@ class EngagementCard:
 
         return line
 
-    def render(self) -> Panel:
+    def render(self, time_now: float = 0) -> Panel:
         s = self.stats
         content_width = self.width - 4
 
@@ -488,8 +501,8 @@ class EngagementCard:
         if s.likes_last_24h or s.retweets_last_24h or s.new_followers_last_24h:
             stats_24h = Text()
             stats_24h.append("Last 24h: ", style="dim")
-            stats_24h.append(f"+{s.likes_last_24h} ♥", style="red")
-            stats_24h.append(f"  +{s.retweets_last_24h} ↻", style="green")
+            stats_24h.append(f"+{s.likes_last_24h} ♥ ", style="red")
+            stats_24h.append(f"  +{s.retweets_last_24h} ↻ ", style="green")
             stats_24h.append(f"  +{s.replies_last_24h} 💬", style="blue")
             if s.new_followers_last_24h:
                 stats_24h.append(f"  +{s.new_followers_last_24h} followers", style="cyan")
@@ -503,11 +516,22 @@ class EngagementCard:
             likers.append(", ".join(handles), style="cyan")
             lines.append(likers)
 
-        # Recent notifications
+        # Recent notifications (paged)
         if s.recent_notifications:
+            current_page = self.get_current_page(time_now)
+            start_idx = current_page * self.NOTIFICATIONS_PER_PAGE
+            end_idx = start_idx + self.NOTIFICATIONS_PER_PAGE
+            page_notifications = s.recent_notifications[start_idx:end_idx]
+
             lines.append(Text(""))
-            lines.append(Text("Recent:", style="dim"))
-            for n in s.recent_notifications[:4]:
+            # Show page indicator if multiple pages
+            header = Text()
+            header.append("Recent:", style="dim")
+            if self.total_pages > 1:
+                header.append(f" [{current_page + 1}/{self.total_pages}]", style="dim magenta")
+            lines.append(header)
+
+            for n in page_notifications:
                 lines.append(self._format_notification(n))
 
         # Fallback to old display if no notification data
@@ -517,8 +541,8 @@ class EngagementCard:
                 my_line = Text()
                 my_line.append(f"Your tweets: {s.my_tweets_count}", style="bright_green")
                 my_line.append("  │  ", style="dim")
-                my_line.append(f"+{s.total_likes_received} ♥", style="red")
-                my_line.append(f"  +{s.total_retweets_received} ↻", style="green")
+                my_line.append(f"+{s.total_likes_received} ♥ ", style="red")
+                my_line.append(f"  +{s.total_retweets_received} ↻ ", style="green")
                 lines.append(my_line)
             else:
                 lines.append(Text("No engagement data yet", style="dim"))
@@ -583,7 +607,7 @@ def compute_engagement_stats(
             from xfeed.tone import analyze_reply_tones
             notifications = analyze_reply_tones(notifications)
 
-        stats.recent_notifications = notifications[:10]  # Keep top 10
+        stats.recent_notifications = notifications[:20]  # Keep top 20 for paging
 
         cutoff = datetime.now() - timedelta(hours=24)
         liker_counts: Counter = Counter()
@@ -722,7 +746,7 @@ class MosaicDisplay:
 
         return Align.center(table)
 
-    def render_engagement_section(self) -> RenderableType | None:
+    def render_engagement_section(self, time_now: float) -> RenderableType | None:
         """Render the my engagement section (full width)."""
         if not self.engagement_stats:
             return None
@@ -734,7 +758,7 @@ class MosaicDisplay:
         # Use full terminal width
         width = self.console.width - 2
         card = EngagementCard(self.engagement_stats, width=width)
-        return card.render()
+        return card.render(time_now)
 
     def render_header(self) -> Text:
         """Render the header bar."""
@@ -922,7 +946,7 @@ class MosaicDisplay:
                 elements.append(Align.center(small_table))
 
         # Add engagement section at bottom, above commands
-        engagement_section = self.render_engagement_section()
+        engagement_section = self.render_engagement_section(now)
         if engagement_section:
             elements.append(Text())
             elements.append(engagement_section)
