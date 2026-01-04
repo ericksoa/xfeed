@@ -428,8 +428,9 @@ class EngagementCard:
             NotificationType.FOLLOW: ("+", "cyan"),
             NotificationType.QUOTE: ("❝", "yellow"),
             NotificationType.MENTION: ("@", "magenta"),
+            NotificationType.UNKNOWN: ("?", "dim"),
         }
-        icon, color = icons.get(n.type, ("•", "dim"))
+        icon, color = icons.get(n.type, ("?", "dim"))
         line.append(f"  {icon} ", style=color)
 
         # Actor

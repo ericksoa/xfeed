@@ -466,18 +466,18 @@ def parse_notification_text(text: str) -> tuple[NotificationType, list[str], int
     """
     text_lower = text.lower()
 
-    # Determine notification type
-    if "liked your" in text_lower:
+    # Determine notification type - check multiple patterns for each type
+    if any(p in text_lower for p in ["liked your", "likes your"]):
         notif_type = NotificationType.LIKE
-    elif "retweeted your" in text_lower or "reposted your" in text_lower:
+    elif any(p in text_lower for p in ["retweeted your", "reposted your", "retweets your", "reposts your"]):
         notif_type = NotificationType.RETWEET
-    elif "replied to" in text_lower:
+    elif any(p in text_lower for p in ["replied", "reply", "commented", "responding to"]):
         notif_type = NotificationType.REPLY
-    elif "quoted your" in text_lower:
+    elif any(p in text_lower for p in ["quoted your", "quotes your", "quote tweeted"]):
         notif_type = NotificationType.QUOTE
-    elif "followed you" in text_lower:
+    elif any(p in text_lower for p in ["followed you", "follows you", "started following"]):
         notif_type = NotificationType.FOLLOW
-    elif "mentioned you" in text_lower:
+    elif any(p in text_lower for p in ["mentioned you", "mentions you", "tagged you"]):
         notif_type = NotificationType.MENTION
     else:
         notif_type = NotificationType.UNKNOWN
@@ -501,8 +501,8 @@ async def extract_notification_data(article, page: Page) -> Notification | None:
 
         # Parse notification type and additional count
         notif_type, _, additional_count = parse_notification_text(text)
-        if notif_type == NotificationType.UNKNOWN:
-            return None
+        # Still capture UNKNOWN notifications so user can see what we're missing
+        # They just won't count toward engagement stats
 
         # Get user links (actors who performed the action)
         links = await article.query_selector_all('a[role="link"]')
@@ -523,12 +523,17 @@ async def extract_notification_data(article, page: Page) -> Notification | None:
                 else:
                     additional_actors.append(handle)
 
-        # Get timestamp
+        # Get timestamp - convert to local time for consistent comparison
         time_elem = await article.query_selector("time")
         if time_elem:
             time_str = await time_elem.get_attribute("datetime")
             if time_str:
-                timestamp = datetime.fromisoformat(time_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                # Parse ISO timestamp (usually UTC) and convert to local naive datetime
+                from datetime import timezone
+                utc_dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+                # Convert to local time, then make naive for comparison with datetime.now()
+                local_dt = utc_dt.astimezone().replace(tzinfo=None)
+                timestamp = local_dt
             else:
                 time_text = await time_elem.inner_text()
                 timestamp = parse_relative_time(time_text)
