@@ -42,6 +42,17 @@ DEFAULT_CONFIG = {
     "relevance_threshold": 7,
     "default_tweet_count": 50,
     "batch_size": 15,
+    # Exploration / Serendipity settings
+    "exploration_rate": 0.1,  # % of feed slots for exploration candidates
+    "exploration_min_quality": 7,  # Minimum score for unknown authors
+    "exploration_diversity_window": 50,  # Posts to consider for diversity
+    "exploration_cooldown_hours": 24,  # Hours before showing same new author again
+    # Reasoning quality settings
+    "reasoning_boost_max": 2,  # Max boost for high-quality reasoning
+    "reasoning_penalty_max": 2,  # Max penalty for low-quality reasoning
+    # Contrarian settings
+    "dissent_min_rigor": 6,  # Minimum rigor score for dissent bonus
+    "dissent_bonus_cap": 2,  # Max boost for contrarian content
 }
 
 

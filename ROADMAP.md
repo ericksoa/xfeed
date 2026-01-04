@@ -2,6 +2,50 @@
 
 A curated list of improvements to make xfeed the best X client for cutting through noise and surfacing signal.
 
+---
+
+## In Progress: Feed Quality Improvements (Jan 2026)
+
+### Serendipity / Exploration Mode
+Prevent the feed from becoming an echo chamber of the same 20 accounts.
+
+- Inject a small percentage of candidates from unknown/new accounts
+- Only when the post demonstrates technical depth or strong reasoning
+- Bounded by: low frequency, diversity-aware, strict anti-manipulation filters
+- **Config knobs**:
+  - `exploration_rate` (default: 0.1) - % of feed slots for exploration
+  - `exploration_min_quality` (default: 7) - minimum score for unknown authors
+  - `exploration_diversity_window` (default: 50) - posts to consider for diversity
+  - `exploration_cooldown_per_author` (default: 24h) - avoid repeating new authors
+
+### Reasoning Quality Scoring
+Score tweets on argument quality, not just topic match.
+
+**Boosts for:**
+- Causal reasoning / mechanism explanations
+- Tradeoff analysis ("X is good for Y but bad for Z")
+- Evidence / citations / links to primary sources
+- Explicit uncertainty or stated assumptions
+
+**Penalties for:**
+- Vague claims with no mechanism ("AI will change everything")
+- "Breaking" claims without sources
+- Excessive rhetorical framing / emotional manipulation
+
+Each scored post includes an explanation string listing top contributing factors.
+
+### Contrarian-but-Serious Allowance
+Allow valuable dissent without letting in outrage bait.
+
+- Dissenting/contrarian takes allowed IF they include evidence, mechanisms, or careful argumentation
+- Still exclude tribalism and rage bait
+- **Rubric**: `dissent_score` positive only when `rigor_score` above threshold
+- **Config knobs**:
+  - `dissent_min_rigor` (default: 6) - minimum rigor for dissent bonus
+  - `dissent_bonus_cap` (default: 2) - max boost for contrarian content
+
+---
+
 ## High Impact
 
 ### 1. Thread Awareness

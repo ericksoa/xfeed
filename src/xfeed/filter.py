@@ -1,12 +1,18 @@
 """LLM-based tweet filtering using Claude."""
 
 import json
+import random
 import re
+from datetime import datetime, timedelta
 
 import anthropic
 
 from xfeed.config import get_api_key, load_config, load_objectives
 from xfeed.models import Tweet, FilteredTweet
+
+
+# Track recently seen exploration authors to avoid repetition
+_exploration_author_cache: dict[str, datetime] = {}
 
 
 SYSTEM_PROMPT = """You are a tweet relevance filter. Your job is to score tweets based on how relevant they are to the user's interests and objectives.
@@ -19,29 +25,53 @@ For each tweet, you will:
 1. Score its relevance from 0-10 (10 = highly relevant, 0 = completely irrelevant)
 2. Provide a brief reason (1 sentence) explaining the score
 3. Identify "superdunks" - quote tweets where someone provides an educational correction, insightful counter-argument, or exposes flawed reasoning in the quoted content
+4. Assess reasoning quality and provide factor breakdown
+5. Flag if the author appears to be unknown/new (not a well-known figure)
 
-Be strict in your scoring:
-- 8-10: Directly matches stated interests, high-value content
+SCORING GUIDE:
+- 8-10: Directly matches stated interests, high-value content, strong reasoning
 - 5-7: Tangentially related, might be interesting
 - 2-4: Weakly related, mostly noise
 - 0-1: Completely irrelevant or matches exclusion criteria
+
+REASONING QUALITY FACTORS (include in "factors" field):
+Apply these as adjustments to the base topic relevance score:
+
+BOOSTS (+1 to +2):
+- "mechanism": Explains WHY/HOW something works, causal reasoning
+- "tradeoffs": Analyzes pros/cons, acknowledges complexity
+- "evidence": Links to papers, data, primary sources
+- "uncertainty": Explicit hedging ("I think", "possibly", "early data")
+- "assumptions": States what they're taking for granted
+
+PENALTIES (-1 to -2):
+- "vague": Claims without mechanism ("X will change everything")
+- "unsourced": "Breaking" or factual claims without attribution
+- "rhetorical": Excessive emotional framing designed to provoke
+- "overconfident": Certain claims about uncertain topics
+
+CONTRARIAN HANDLING:
+- If a tweet presents a dissenting/contrarian view:
+  - Check if it has strong reasoning (mechanism, evidence, hedging)
+  - If rigor is high: include "dissent_rigorous" in factors (allows bonus)
+  - If rigor is low: do NOT boost, treat as normal or penalize
 
 SUPERDUNK DETECTION:
 A "superdunk" is when someone quote-tweets a bad take and provides:
 - A factual correction with evidence or expertise
 - An insightful reframe that exposes flawed logic
 - Educational context that the original poster missed
-- A genuinely clever observation that teaches something
+NOT a superdunk: simple mockery, "ratio" attempts, pile-ons.
 
-NOT a superdunk: simple mockery, "ratio" attempts, pile-ons, hot takes responding to hot takes.
-The VALUE is in the reply/quote being genuinely educational, not just "winning."
-
+EXCLUSION RULES:
 If a tweet matches any "Exclude" criteria, score it 0-1 regardless of other content.
+Exclusions apply even to unknown/new accounts - exploration is not a bypass for quality.
 
 Respond with a JSON array in this exact format:
 [
-  {{"id": "tweet_id", "score": 8, "reason": "Brief explanation", "superdunk": false}},
-  {{"id": "tweet_id", "score": 9, "reason": "Excellent correction of a common misconception", "superdunk": true}},
+  {{"id": "tweet_id", "score": 8, "reason": "Brief explanation", "superdunk": false, "factors": ["mechanism", "evidence"], "is_unknown_author": false}},
+  {{"id": "tweet_id", "score": 7, "reason": "Interesting contrarian take with citations", "superdunk": false, "factors": ["dissent_rigorous", "evidence", "uncertainty"], "is_unknown_author": true}},
+  {{"id": "tweet_id", "score": 3, "reason": "Vague claim, no mechanism", "superdunk": false, "factors": ["vague", "overconfident"], "is_unknown_author": false}},
   ...
 ]"""
 
@@ -92,10 +122,54 @@ def parse_filter_response(response_text: str) -> list[dict]:
         return []
 
 
+def _is_author_in_cooldown(author_handle: str, cooldown_hours: int) -> bool:
+    """Check if an exploration author is still in cooldown period."""
+    global _exploration_author_cache
+    if author_handle not in _exploration_author_cache:
+        return False
+    last_seen = _exploration_author_cache[author_handle]
+    return datetime.now() - last_seen < timedelta(hours=cooldown_hours)
+
+
+def _mark_author_seen(author_handle: str) -> None:
+    """Mark an exploration author as recently seen."""
+    global _exploration_author_cache
+    _exploration_author_cache[author_handle] = datetime.now()
+    # Clean up old entries
+    cutoff = datetime.now() - timedelta(hours=48)
+    _exploration_author_cache = {
+        k: v for k, v in _exploration_author_cache.items() if v > cutoff
+    }
+
+
+def _build_explanation(factors: list[str], base_reason: str) -> str:
+    """Build explanation string from factors and base reason."""
+    if not factors:
+        return base_reason
+
+    boost_factors = []
+    penalty_factors = []
+
+    boost_names = {"mechanism", "tradeoffs", "evidence", "uncertainty", "assumptions", "dissent_rigorous"}
+    penalty_names = {"vague", "unsourced", "rhetorical", "overconfident"}
+
+    for f in factors:
+        if f in boost_names:
+            boost_factors.append(f"+{f}")
+        elif f in penalty_names:
+            penalty_factors.append(f"-{f}")
+
+    factor_str = ", ".join(boost_factors + penalty_factors)
+    if factor_str:
+        return f"{base_reason} [{factor_str}]"
+    return base_reason
+
+
 def filter_tweets(
     tweets: list[Tweet],
     threshold: int | None = None,
     on_progress: callable = None,
+    seed: int | None = None,
 ) -> list[FilteredTweet]:
     """
     Filter tweets using Claude Haiku to score relevance.
@@ -104,6 +178,7 @@ def filter_tweets(
         tweets: List of tweets to filter
         threshold: Minimum relevance score (0-10). Uses config default if None.
         on_progress: Callback function for progress updates
+        seed: Random seed for deterministic exploration sampling
 
     Returns:
         List of FilteredTweet objects that meet the threshold
@@ -122,12 +197,22 @@ def filter_tweets(
     batch_size = config.get("batch_size", 15)
     objectives = load_objectives()
 
+    # Exploration settings
+    exploration_rate = config.get("exploration_rate", 0.1)
+    exploration_min_quality = config.get("exploration_min_quality", 7)
+    exploration_cooldown = config.get("exploration_cooldown_hours", 24)
+
+    # Contrarian settings
+    dissent_min_rigor = config.get("dissent_min_rigor", 6)
+    dissent_bonus_cap = config.get("dissent_bonus_cap", 2)
+
     client = anthropic.Anthropic(api_key=api_key)
 
     # Create lookup dict for tweets
     tweet_lookup = {t.id: t for t in tweets}
 
-    filtered_tweets: list[FilteredTweet] = []
+    # Collect all scored tweets (before threshold filtering)
+    all_scored: list[dict] = []
     processed = 0
 
     # Process in batches
@@ -151,17 +236,15 @@ def filter_tweets(
 
             for score_data in scores:
                 tweet_id = score_data.get("id")
-                score = score_data.get("score", 0)
-                reason = score_data.get("reason", "")
-                is_superdunk = score_data.get("superdunk", False)
-
-                if tweet_id in tweet_lookup and score >= threshold:
-                    filtered_tweets.append(FilteredTweet(
-                        tweet=tweet_lookup[tweet_id],
-                        relevance_score=score,
-                        reason=reason,
-                        is_superdunk=is_superdunk,
-                    ))
+                if tweet_id in tweet_lookup:
+                    all_scored.append({
+                        "tweet": tweet_lookup[tweet_id],
+                        "score": score_data.get("score", 0),
+                        "reason": score_data.get("reason", ""),
+                        "superdunk": score_data.get("superdunk", False),
+                        "factors": score_data.get("factors", []),
+                        "is_unknown_author": score_data.get("is_unknown_author", False),
+                    })
 
         except Exception as e:
             # Log error but continue with other batches
@@ -171,7 +254,75 @@ def filter_tweets(
         if on_progress:
             on_progress(processed, len(tweets))
 
-    # Sort by relevance score (highest first)
-    filtered_tweets.sort(key=lambda x: x.relevance_score, reverse=True)
+    # Separate into regular and exploration candidates
+    regular_tweets: list[FilteredTweet] = []
+    exploration_candidates: list[FilteredTweet] = []
 
-    return filtered_tweets
+    for scored in all_scored:
+        factors = scored["factors"]
+        score = scored["score"]
+
+        # Build explanation with factors
+        explanation = _build_explanation(factors, scored["reason"])
+
+        # Check for rigorous dissent bonus
+        has_dissent = "dissent_rigorous" in factors
+        rigor_factors = {"mechanism", "evidence", "tradeoffs", "uncertainty", "assumptions"}
+        rigor_count = len([f for f in factors if f in rigor_factors])
+
+        # Apply dissent bonus if rigorous enough
+        if has_dissent and rigor_count >= (dissent_min_rigor // 2):
+            bonus = min(dissent_bonus_cap, rigor_count)
+            score = min(10, score + bonus)
+            explanation += f" [dissent+{bonus}]"
+
+        ft = FilteredTweet(
+            tweet=scored["tweet"],
+            relevance_score=score,
+            reason=explanation,
+            is_superdunk=scored["superdunk"],
+        )
+
+        # Route to regular or exploration
+        if scored["is_unknown_author"]:
+            # Unknown author - potential exploration candidate
+            author = scored["tweet"].author_handle
+            if score >= exploration_min_quality and not _is_author_in_cooldown(author, exploration_cooldown):
+                exploration_candidates.append(ft)
+            elif score >= threshold:
+                # Unknown but high enough score - include normally
+                regular_tweets.append(ft)
+        else:
+            # Known author - apply normal threshold
+            if score >= threshold:
+                regular_tweets.append(ft)
+
+    # Sort regular tweets by score
+    regular_tweets.sort(key=lambda x: x.relevance_score, reverse=True)
+
+    # Sample exploration candidates (deterministic if seed provided)
+    rng = random.Random(seed)
+    max_exploration = max(1, int(len(regular_tweets) * exploration_rate))
+
+    # Shuffle exploration candidates for diversity
+    rng.shuffle(exploration_candidates)
+    selected_exploration = exploration_candidates[:max_exploration]
+
+    # Mark selected exploration authors as seen
+    for ft in selected_exploration:
+        _mark_author_seen(ft.tweet.author_handle)
+        ft.reason = f"[EXPLORE] {ft.reason}"
+
+    # Combine: regular tweets + exploration candidates interspersed
+    result = regular_tweets.copy()
+
+    # Insert exploration candidates at intervals
+    if selected_exploration and result:
+        interval = max(3, len(result) // (len(selected_exploration) + 1))
+        for i, exp_tweet in enumerate(selected_exploration):
+            insert_pos = min((i + 1) * interval, len(result))
+            result.insert(insert_pos, exp_tweet)
+    else:
+        result.extend(selected_exploration)
+
+    return result
