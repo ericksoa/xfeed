@@ -420,17 +420,17 @@ class EngagementCard:
         """Format a single notification for display."""
         line = Text()
 
-        # Icon based on type
+        # Icon based on type (all 2 chars wide for alignment)
         icons = {
-            NotificationType.LIKE: ("♥", "red"),
-            NotificationType.RETWEET: ("↻", "green"),
+            NotificationType.LIKE: ("♥ ", "red"),
+            NotificationType.RETWEET: ("↻ ", "green"),
             NotificationType.REPLY: ("💬", "blue"),
-            NotificationType.FOLLOW: ("+", "cyan"),
-            NotificationType.QUOTE: ("❝", "yellow"),
-            NotificationType.MENTION: ("@", "magenta"),
-            NotificationType.UNKNOWN: ("?", "dim"),
+            NotificationType.FOLLOW: ("+ ", "cyan"),
+            NotificationType.QUOTE: ("❝ ", "yellow"),
+            NotificationType.MENTION: ("@ ", "magenta"),
+            NotificationType.UNKNOWN: ("? ", "dim"),
         }
-        icon, color = icons.get(n.type, ("?", "dim"))
+        icon, color = icons.get(n.type, ("? ", "dim"))
         line.append(f"  {icon} ", style=color)
 
         # Actor
@@ -732,9 +732,11 @@ class MosaicDisplay:
         displayed = large + medium + small
 
         header = Text()
-        header.append("▄" * 20, style="bright_red")
-        header.append(" XFEED MOSAIC ", style="bold white on red")
-        header.append("▄" * 20, style="bright_red")
+        header.append("━━━ ", style="bold red")
+        header.append("XFEED", style="bold bright_white")
+        header.append(" ", style="")
+        header.append("MOSAIC", style="bold bright_red")
+        header.append(" ━━━", style="bold red")
         header.append(f"  {now}", style="dim")
         header.append(f"  │  threshold: {self.threshold}+", style="cyan")
         header.append(f"  │  count: {self.count}", style="cyan")
