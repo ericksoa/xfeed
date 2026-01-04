@@ -540,27 +540,41 @@ async def extract_notification_data(article, page: Page) -> Notification | None:
         else:
             timestamp = datetime.now()
 
-        # Get tweet preview and reply content if available
+        # Get tweet content using proper DOM selectors
         tweet_preview = None
         reply_content = None
         reply_to_content = None
 
-        # The notification text contains content after the action description
-        # For replies: typically shows original tweet first, then the reply
-        lines = text.split("\n")
-        content_lines = [line.strip() for line in lines[1:] if line.strip() and len(line.strip()) > 10]
+        # X uses [data-testid="tweetText"] for tweet content
+        tweet_text_elements = await article.query_selector_all('[data-testid="tweetText"]')
 
         if notif_type == NotificationType.REPLY:
-            # For replies, try to capture both the original and the reply
-            # X typically shows: [header] [original tweet] [reply]
-            if len(content_lines) >= 2:
-                reply_to_content = content_lines[0][:200]  # Original tweet
-                reply_content = content_lines[1][:200]     # Their reply
-            elif len(content_lines) == 1:
-                reply_content = content_lines[0][:200]
+            # For replies: first tweetText is original, second is the reply
+            if len(tweet_text_elements) >= 2:
+                reply_to_content = (await tweet_text_elements[0].inner_text())[:200]
+                reply_content = (await tweet_text_elements[1].inner_text())[:200]
+            elif len(tweet_text_elements) == 1:
+                # Only one text element - could be either, assume it's the reply
+                reply_content = (await tweet_text_elements[0].inner_text())[:200]
+            else:
+                # Fallback to text parsing if no tweetText elements found
+                lines = text.split("\n")
+                content_lines = [line.strip() for line in lines[1:] if line.strip() and len(line.strip()) > 10]
+                if len(content_lines) >= 2:
+                    reply_to_content = content_lines[0][:200]
+                    reply_content = content_lines[1][:200]
+                elif len(content_lines) == 1:
+                    reply_content = content_lines[0][:200]
         else:
-            if content_lines:
-                tweet_preview = content_lines[0][:100]
+            # For other notification types, get any tweet preview
+            if tweet_text_elements:
+                tweet_preview = (await tweet_text_elements[0].inner_text())[:100]
+            else:
+                # Fallback to text parsing
+                lines = text.split("\n")
+                content_lines = [line.strip() for line in lines[1:] if line.strip() and len(line.strip()) > 10]
+                if content_lines:
+                    tweet_preview = content_lines[0][:100]
 
         return Notification(
             type=notif_type,
