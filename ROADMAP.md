@@ -106,6 +106,6 @@ Color-code tiles by sentiment in addition to relevance. Distinguish excited/opti
 - [x] Rich terminal mosaic visualization
 - [x] Engagement tracking (notifications, profile tweets)
 - [x] Interactive controls (+/- threshold, count cycling, objectives editing)
-- [x] Human-like throttling to avoid bot detection
+- [x] Smart rate limiting with variable delays
 - [x] Keyboard shortcuts for opening tweets in browser
 - [x] Vibe/topic extraction and display

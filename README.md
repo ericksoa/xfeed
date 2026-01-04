@@ -10,7 +10,7 @@ A CLI tool that filters your X (Twitter) timeline using Claude AI, surfacing con
 - **Engagement Tracking**: See your notifications, likes, and retweets at a glance
 - **Interactive Controls**: Adjust threshold and count on-the-fly without restarting
 - **Background Refresh**: UI stays responsive during scraping operations
-- **Human-like Throttling**: Randomized delays to avoid bot detection
+- **Smart Rate Limiting**: Variable delays for reliable scraping
 
 ## Getting Started
 
