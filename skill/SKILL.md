@@ -20,7 +20,7 @@ Use this skill when users want to:
 ## Requirements
 
 The xfeed CLI must be installed and configured:
-- Chrome browser logged into X (for cookie extraction)
+- Logged into X (twitter.com) in Chrome
 - Anthropic API key
 
 ## Commands
@@ -57,9 +57,9 @@ xfeed config --show
 
 ## How It Works
 
-1. Extracts X session cookies from Chrome browser
-2. Uses Playwright to fetch your home timeline
-3. Sends tweets in batches to Claude Haiku for relevance scoring
+1. Uses your Chrome session to access X
+2. Fetches your home timeline with Playwright
+3. Sends tweets to Claude Haiku for relevance scoring
 4. Displays tweets scoring above threshold (default: 7/10)
 5. Shows relevance reason for each tweet
 
