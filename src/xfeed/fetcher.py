@@ -412,7 +412,8 @@ async def fetch_timeline(
         page = await context.new_page()
 
         # Block unnecessary resources for faster loading
-        await page.route("**/*", _block_unnecessary_resources)
+        # Resource blocking disabled - was causing blank pages on X
+        # await page.route("**/*", _block_unnecessary_resources)
 
         # Navigate to home timeline (don't wait for all resources)
         await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
@@ -623,7 +624,8 @@ async def fetch_notifications(
         page = await context.new_page()
 
         # Block unnecessary resources for faster loading
-        await page.route("**/*", _block_unnecessary_resources)
+        # Resource blocking disabled - was causing blank pages on X
+        # await page.route("**/*", _block_unnecessary_resources)
 
         await page.goto("https://x.com/notifications", wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(_page_load_delay())
@@ -703,7 +705,8 @@ async def fetch_profile_timeline(
         page = await context.new_page()
 
         # Block unnecessary resources for faster loading
-        await page.route("**/*", _block_unnecessary_resources)
+        # Resource blocking disabled - was causing blank pages on X
+        # await page.route("**/*", _block_unnecessary_resources)
 
         await page.goto(f"https://x.com/{username}", wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(_page_load_delay())
@@ -776,8 +779,8 @@ async def fetch_all_engagement(
         await context.add_cookies(cookies)
         page = await context.new_page()
 
-        # Block unnecessary resources for faster loading
-        await page.route("**/*", _block_unnecessary_resources)
+        # NOTE: Resource blocking disabled - was causing blank pages
+        # await page.route("**/*", _block_unnecessary_resources)
 
         # 1. Fetch home timeline
         if on_progress:
@@ -785,6 +788,13 @@ async def fetch_all_engagement(
 
         await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(_page_load_delay())
+
+        # Wait for tweets to load (they load dynamically)
+        try:
+            await page.wait_for_selector(TWEET_SELECTOR, timeout=15000)
+        except Exception:
+            # Tweets didn't load in time - continue anyway and try scrolling
+            pass
 
         if "/login" in page.url:
             await browser.close()

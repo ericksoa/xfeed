@@ -305,7 +305,6 @@ def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
 
         try:
             if engagement:
-                # Fetch all three: home, profile, notifications
                 home_tweets, profile_tweets, notifications, my_handle = await fetch_all_engagement(
                     home_count=count,
                     profile_count=10,
@@ -314,17 +313,14 @@ def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
                 )
                 if not home_tweets:
                     return [], my_handle, profile_tweets, notifications
-                # Run filter in executor to not block UI
                 filtered = await loop.run_in_executor(
                     None, functools.partial(filter_tweets, home_tweets, threshold=threshold)
                 )
                 return filtered, my_handle, profile_tweets, notifications
             else:
-                # Just home timeline
                 tweets, my_handle = await fetch_timeline(count=count, headless=True)
                 if not tweets:
                     return [], my_handle, [], []
-                # Run filter in executor to not block UI
                 filtered = await loop.run_in_executor(
                     None, functools.partial(filter_tweets, tweets, threshold=threshold)
                 )
