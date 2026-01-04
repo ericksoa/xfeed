@@ -20,7 +20,7 @@ On first run, xfeed will:
 2. Auto-install the browser component
 3. Create a default objectives file at `~/.xfeed/objectives.md`
 
-**Prerequisite**: You must be logged into X (twitter.com) in Chrome, Firefox, or Safari.
+**Prerequisite**: You must be logged into X (twitter.com) in Chrome.
 
 ## Features
 

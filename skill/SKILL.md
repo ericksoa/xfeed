@@ -20,9 +20,8 @@ Use this skill when users want to:
 ## Requirements
 
 The xfeed CLI must be installed and configured:
-- Python virtual environment in the project directory
 - Chrome browser logged into X (for cookie extraction)
-- Anthropic API key in `.env`
+- Anthropic API key
 
 ## Commands
 
