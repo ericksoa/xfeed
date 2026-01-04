@@ -37,7 +37,7 @@ READ_PAUSE_MAX = 1000
 # =============================================================================
 # Resource blocking - skip loading things we don't need
 # =============================================================================
-BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}  # Don't block stylesheet - needed for page load
 BLOCKED_URL_PATTERNS = [
     "analytics",
     "tracking",
@@ -415,7 +415,7 @@ async def fetch_timeline(
         await page.route("**/*", _block_unnecessary_resources)
 
         # Navigate to home timeline (don't wait for all resources)
-        await page.goto("https://x.com/home", wait_until="domcontentloaded")
+        await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(_page_load_delay())
 
         # Check if we're logged in
@@ -625,7 +625,7 @@ async def fetch_notifications(
         # Block unnecessary resources for faster loading
         await page.route("**/*", _block_unnecessary_resources)
 
-        await page.goto("https://x.com/notifications", wait_until="domcontentloaded")
+        await page.goto("https://x.com/notifications", wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(_page_load_delay())
 
         # Check if logged in
@@ -705,7 +705,7 @@ async def fetch_profile_timeline(
         # Block unnecessary resources for faster loading
         await page.route("**/*", _block_unnecessary_resources)
 
-        await page.goto(f"https://x.com/{username}", wait_until="domcontentloaded")
+        await page.goto(f"https://x.com/{username}", wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(_page_load_delay())
 
         # Check if logged in
@@ -783,7 +783,7 @@ async def fetch_all_engagement(
         if on_progress:
             on_progress("home", 0, home_count)
 
-        await page.goto("https://x.com/home", wait_until="domcontentloaded")
+        await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(_page_load_delay())
 
         if "/login" in page.url:
@@ -817,7 +817,7 @@ async def fetch_all_engagement(
                 on_progress("profile", 0, profile_count)
 
             username = my_handle.lstrip("@")
-            await page.goto(f"https://x.com/{username}", wait_until="domcontentloaded")
+            await page.goto(f"https://x.com/{username}", wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(_page_load_delay())
 
             scroll_count = 0
@@ -845,7 +845,7 @@ async def fetch_all_engagement(
             if on_progress:
                 on_progress("notifications", 0, notifications_count)
 
-            await page.goto("https://x.com/notifications", wait_until="domcontentloaded")
+            await page.goto("https://x.com/notifications", wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(_page_load_delay())
 
             scroll_count = 0
