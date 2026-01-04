@@ -438,8 +438,27 @@ class EngagementCard:
         if n.additional_count > 0:
             line.append(f" +{n.additional_count}", style="dim")
 
-        # Time
-        line.append(f" ({n.formatted_time})", style="dim")
+        # For replies: show tone and content
+        if n.type == NotificationType.REPLY:
+            if n.reply_tone:
+                # Color tone based on sentiment
+                tone_color = "dim"
+                tone_lower = n.reply_tone.lower()
+                if any(w in tone_lower for w in ["hostile", "rude", "angry", "snarky", "dismissive", "condescending", "aggressive"]):
+                    tone_color = "red"
+                elif any(w in tone_lower for w in ["curious", "question", "confused", "wondering"]):
+                    tone_color = "yellow"
+                elif any(w in tone_lower for w in ["support", "grateful", "excited", "encouraging", "friendly", "helpful", "positive"]):
+                    tone_color = "green"
+                line.append(f" [{n.reply_tone}]", style=tone_color)
+
+            if n.reply_content:
+                # Truncate content for display
+                content = n.reply_content[:60] + "..." if len(n.reply_content) > 60 else n.reply_content
+                line.append(f" \"{content}\"", style="dim italic")
+        else:
+            # Time for non-reply notifications
+            line.append(f" ({n.formatted_time})", style="dim")
 
         return line
 
@@ -516,6 +535,7 @@ def compute_engagement_stats(
     my_handle: str | None,
     notifications: list[Notification] | None = None,
     profile_tweets: list | None = None,  # list[Tweet]
+    analyze_tones: bool = True,
 ) -> MyEngagementStats:
     """Compute engagement statistics from tweets and notifications."""
     from collections import Counter
@@ -542,6 +562,11 @@ def compute_engagement_stats(
 
     # Process notifications
     if notifications:
+        # Analyze reply tones
+        if analyze_tones:
+            from xfeed.tone import analyze_reply_tones
+            notifications = analyze_reply_tones(notifications)
+
         stats.recent_notifications = notifications[:10]  # Keep top 10
 
         cutoff = datetime.now() - timedelta(hours=24)

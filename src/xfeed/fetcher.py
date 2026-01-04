@@ -540,14 +540,20 @@ async def extract_notification_data(article, page: Page) -> Notification | None:
         else:
             timestamp = datetime.now()
 
-        # Get tweet preview if available (truncated content)
+        # Get tweet preview and reply content if available
         tweet_preview = None
-        # The notification text often contains the tweet content after the action description
+        reply_content = None
+
+        # The notification text often contains content after the action description
         lines = text.split("\n")
-        for line in lines[1:]:  # Skip first line which is the notification
+        for line in lines[1:]:  # Skip first line which is the notification header
             line = line.strip()
-            if len(line) > 20 and not line.endswith("..."):
-                tweet_preview = line[:100]
+            if len(line) > 10:
+                # For replies, this is likely the reply content
+                if notif_type == NotificationType.REPLY:
+                    reply_content = line[:200]  # Keep more for tone analysis
+                else:
+                    tweet_preview = line[:100]
                 break
 
         return Notification(
@@ -558,6 +564,7 @@ async def extract_notification_data(article, page: Page) -> Notification | None:
             additional_actors=additional_actors[:5],  # Limit to 5
             additional_count=additional_count,
             target_tweet_preview=tweet_preview,
+            reply_content=reply_content,
         )
     except Exception:
         return None

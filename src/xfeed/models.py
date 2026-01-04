@@ -93,6 +93,8 @@ class Notification:
     additional_actors: list[str] = field(default_factory=list)  # Other actors in grouped notifs
     additional_count: int = 0  # "and N others"
     target_tweet_preview: str | None = None  # Preview of the tweet that was engaged with
+    reply_content: str | None = None  # For replies: the actual reply text
+    reply_tone: str | None = None  # For replies: tone classification (e.g., "curious", "supportive", "hostile")
 
     @property
     def total_actors(self) -> int:
