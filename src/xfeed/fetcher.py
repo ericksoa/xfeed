@@ -18,28 +18,65 @@ from xfeed.models import Tweet, QuotedTweet, Notification, NotificationType
 # All times are in milliseconds unless noted.
 
 # Scroll delays: variable intervals between scrolls
-SCROLL_DELAY_MIN = 1200  # Minimum ms between scrolls
-SCROLL_DELAY_MAX = 3500  # Maximum ms between scrolls
-SCROLL_DELAY_READ = 800  # Extra delay when "reading" (random chance)
+SCROLL_DELAY_MIN = 400   # Minimum ms between scrolls
+SCROLL_DELAY_MAX = 800   # Maximum ms between scrolls
 
 # Page load: wait for content to settle after load
-PAGE_LOAD_MIN = 2500
-PAGE_LOAD_MAX = 4500
+PAGE_LOAD_MIN = 800
+PAGE_LOAD_MAX = 1500
 
 # Navigation: pause between switching pages
-NAV_PAUSE_MIN = 1500
-NAV_PAUSE_MAX = 3000
+NAV_PAUSE_MIN = 500
+NAV_PAUSE_MAX = 1000
 
 # Reading simulation: occasionally pause longer for content loading
-READ_PAUSE_CHANCE = 0.15  # 15% chance to pause and "read"
-READ_PAUSE_MIN = 2000
-READ_PAUSE_MAX = 5000
+READ_PAUSE_CHANCE = 0.05  # 5% chance to pause and "read"
+READ_PAUSE_MIN = 500
+READ_PAUSE_MAX = 1000
+
+# =============================================================================
+# Resource blocking - skip loading things we don't need
+# =============================================================================
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
+BLOCKED_URL_PATTERNS = [
+    "analytics",
+    "tracking",
+    "ads.",
+    "doubleclick",
+    "googlesyndication",
+    "facebook.com",
+    "twimg.com/emoji",  # Emoji images
+    "twimg.com/profile_images",  # Profile pics (we just need text)
+    "video.twimg.com",
+    "pbs.twimg.com",  # Media images
+    "ton.twitter.com",  # Analytics
+]
 
 # Rate limiting: minimum time between full fetch sessions (seconds)
 MIN_FETCH_INTERVAL = 120  # 2 minutes minimum between full refreshes
 
 # Track last fetch time for rate limiting
 _last_fetch_time: datetime | None = None
+
+
+async def _block_unnecessary_resources(route):
+    """Block images, media, fonts, and tracking to speed up page loads."""
+    request = route.request
+
+    # Block by resource type
+    if request.resource_type in BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+        return
+
+    # Block by URL pattern
+    url = request.url.lower()
+    for pattern in BLOCKED_URL_PATTERNS:
+        if pattern in url:
+            await route.abort()
+            return
+
+    # Allow everything else
+    await route.continue_()
 
 
 def _scroll_delay() -> int:
@@ -374,8 +411,11 @@ async def fetch_timeline(
 
         page = await context.new_page()
 
-        # Navigate to home timeline
-        await page.goto("https://x.com/home")
+        # Block unnecessary resources for faster loading
+        await page.route("**/*", _block_unnecessary_resources)
+
+        # Navigate to home timeline (don't wait for all resources)
+        await page.goto("https://x.com/home", wait_until="domcontentloaded")
         await page.wait_for_timeout(_page_load_delay())
 
         # Check if we're logged in
@@ -549,7 +589,10 @@ async def fetch_notifications(
         await context.add_cookies(cookies)
         page = await context.new_page()
 
-        await page.goto("https://x.com/notifications")
+        # Block unnecessary resources for faster loading
+        await page.route("**/*", _block_unnecessary_resources)
+
+        await page.goto("https://x.com/notifications", wait_until="domcontentloaded")
         await page.wait_for_timeout(_page_load_delay())
 
         # Check if logged in
@@ -626,7 +669,10 @@ async def fetch_profile_timeline(
         await context.add_cookies(cookies)
         page = await context.new_page()
 
-        await page.goto(f"https://x.com/{username}")
+        # Block unnecessary resources for faster loading
+        await page.route("**/*", _block_unnecessary_resources)
+
+        await page.goto(f"https://x.com/{username}", wait_until="domcontentloaded")
         await page.wait_for_timeout(_page_load_delay())
 
         # Check if logged in
@@ -697,11 +743,14 @@ async def fetch_all_engagement(
         await context.add_cookies(cookies)
         page = await context.new_page()
 
+        # Block unnecessary resources for faster loading
+        await page.route("**/*", _block_unnecessary_resources)
+
         # 1. Fetch home timeline
         if on_progress:
             on_progress("home", 0, home_count)
 
-        await page.goto("https://x.com/home")
+        await page.goto("https://x.com/home", wait_until="domcontentloaded")
         await page.wait_for_timeout(_page_load_delay())
 
         if "/login" in page.url:
@@ -735,7 +784,7 @@ async def fetch_all_engagement(
                 on_progress("profile", 0, profile_count)
 
             username = my_handle.lstrip("@")
-            await page.goto(f"https://x.com/{username}")
+            await page.goto(f"https://x.com/{username}", wait_until="domcontentloaded")
             await page.wait_for_timeout(_page_load_delay())
 
             scroll_count = 0
@@ -763,7 +812,7 @@ async def fetch_all_engagement(
             if on_progress:
                 on_progress("notifications", 0, notifications_count)
 
-            await page.goto("https://x.com/notifications")
+            await page.goto("https://x.com/notifications", wait_until="domcontentloaded")
             await page.wait_for_timeout(_page_load_delay())
 
             scroll_count = 0
