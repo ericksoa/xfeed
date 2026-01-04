@@ -22,6 +22,7 @@ from xfeed.config import (
     save_config,
     get_objectives_path,
     load_objectives,
+    ensure_setup,
     CONFIG_DIR,
 )
 from xfeed.filter import filter_tweets
@@ -90,12 +91,8 @@ def main():
 @click.option("--json-output", "--json", "json_output", is_flag=True, help="Output as JSON")
 def fetch(count: int, threshold: int | None, raw: bool, json_output: bool):
     """Fetch and filter your X timeline."""
-    # Check for API key if not in raw mode
-    if not raw and not get_api_key():
-        console.print(
-            "[red]Error:[/red] Anthropic API key not configured.\n"
-            "Add ANTHROPIC_API_KEY to .env file in the project directory."
-        )
+    # Run setup if needed (unless raw mode)
+    if not raw and not ensure_setup():
         sys.exit(1)
 
     # Fetch tweets
@@ -253,11 +250,7 @@ def ticker(rotate: int, refresh: int, count: int, threshold: int, compact: bool)
     """CNN-style rotating ticker display of filtered tweets."""
     from xfeed.ticker import run_ticker
 
-    if not get_api_key():
-        console.print(
-            "[red]Error:[/red] Anthropic API key not configured.\n"
-            "Add ANTHROPIC_API_KEY to .env file in the project directory."
-        )
+    if not ensure_setup():
         sys.exit(1)
 
     async def fetch_filtered(count: int, threshold: int):
@@ -302,11 +295,7 @@ def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
     from xfeed.mosaic import run_mosaic
     from xfeed.summarizer import extract_vibe
 
-    if not get_api_key():
-        console.print(
-            "[red]Error:[/red] Anthropic API key not configured.\n"
-            "Add ANTHROPIC_API_KEY to .env file in the project directory."
-        )
+    if not ensure_setup():
         sys.exit(1)
 
     async def fetch_filtered(count: int, threshold: int):
@@ -335,11 +324,7 @@ def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
             return [], None, [], []
 
     console.print("[bold red]Starting XFEED Mosaic[/bold red]")
-    if engagement:
-        console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+ │ Engagement tracking ON[/dim]")
-    else:
-        console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+ │ Count: {count}[/dim]")
-    console.print("[dim][1-9] open tweet │ [r]efresh │ [q]uit[/dim]\n")
+    console.print(f"[dim]Refresh: {refresh}min │ Threshold: {threshold}+[/dim]\n")
 
     asyncio.run(run_mosaic(
         fetch_func=fetch_filtered,
@@ -361,11 +346,7 @@ def watch(interval: int, count: int, threshold: int, top: int):
     Designed to run alongside Claude Code, printing distinctly-colored
     updates every few minutes for ambient awareness.
     """
-    if not get_api_key():
-        console.print(
-            "[red]Error:[/red] Anthropic API key not configured.\n"
-            "Add ANTHROPIC_API_KEY to .env file in the project directory."
-        )
+    if not ensure_setup():
         sys.exit(1)
 
     def print_update(tweets: list) -> None:

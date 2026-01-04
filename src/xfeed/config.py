@@ -2,14 +2,17 @@
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 import yaml
 
-# Load .env from project directory
+# Load .env from multiple locations
 _project_root = Path(__file__).parent.parent.parent
-load_dotenv(_project_root / ".env")
+load_dotenv(_project_root / ".env")  # Project directory
+load_dotenv(Path.home() / ".xfeed" / ".env")  # Config directory
 
 
 CONFIG_DIR = Path.home() / ".xfeed"
@@ -148,3 +151,79 @@ def get_objectives_path() -> Path:
         save_objectives(DEFAULT_OBJECTIVES)
 
     return OBJECTIVES_FILE
+
+
+def ensure_playwright_browser() -> bool:
+    """Check if Playwright chromium is installed, install if needed. Returns True if ready."""
+    try:
+        # Check if chromium is already installed
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
+            capture_output=True,
+            text=True,
+        )
+        # If dry-run shows nothing to install, we're good
+        if "chromium" not in result.stdout.lower() or "already installed" in result.stdout.lower():
+            return True
+    except Exception:
+        pass
+
+    # Need to install
+    print("Installing Playwright browser (one-time setup)...")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+        )
+        print("Browser installed successfully!")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to install browser: {e}")
+        print("Try running: playwright install chromium")
+        return False
+
+
+def prompt_for_api_key() -> str | None:
+    """Prompt user for API key if not set. Returns the key or None."""
+    print("\n" + "=" * 60)
+    print("XFEED SETUP")
+    print("=" * 60)
+    print("\nTo filter your timeline, xfeed needs an Anthropic API key.")
+    print("Get one at: https://console.anthropic.com/")
+    print("\nThe key will be saved to ~/.xfeed/config.yaml")
+    print("You can also set ANTHROPIC_API_KEY environment variable.\n")
+
+    try:
+        api_key = input("Enter your Anthropic API key (or press Enter to skip): ").strip()
+        if api_key:
+            if api_key.startswith("sk-ant-"):
+                set_api_key(api_key)
+                print("\nAPI key saved!")
+                return api_key
+            else:
+                print("\nWarning: Key doesn't look like an Anthropic key (should start with sk-ant-)")
+                confirm = input("Save anyway? [y/N]: ").strip().lower()
+                if confirm == "y":
+                    set_api_key(api_key)
+                    print("\nAPI key saved!")
+                    return api_key
+        return None
+    except (KeyboardInterrupt, EOFError):
+        print("\nSkipped.")
+        return None
+
+
+def ensure_setup() -> bool:
+    """Run first-time setup if needed. Returns True if ready to run."""
+    # Check API key
+    if not get_api_key():
+        key = prompt_for_api_key()
+        if not key:
+            print("\nNo API key configured. Set ANTHROPIC_API_KEY or run: xfeed config --api-key YOUR_KEY")
+            return False
+
+    # Check Playwright browser
+    if not ensure_playwright_browser():
+        return False
+
+    return True
