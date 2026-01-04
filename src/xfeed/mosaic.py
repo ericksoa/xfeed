@@ -417,7 +417,7 @@ class EngagementCard:
         self.width = width
 
     def _format_notification(self, n: Notification) -> Text:
-        """Format a single notification for display."""
+        """Format a single notification for display (single line, no wrap)."""
         line = Text()
 
         # Icon based on type (all 2 chars wide for alignment)
@@ -431,12 +431,19 @@ class EngagementCard:
             NotificationType.UNKNOWN: ("? ", "dim"),
         }
         icon, color = icons.get(n.type, ("? ", "dim"))
-        line.append(f"  {icon} ", style=color)
+        prefix = f"  {icon} "
+        line.append(prefix, style=color)
 
         # Actor
         line.append(n.actor_handle, style="cyan")
         if n.additional_count > 0:
             line.append(f" +{n.additional_count}", style="dim")
+
+        # Calculate used width so far (for reply content truncation)
+        # prefix (5) + actor handle + optional count
+        used_width = len(prefix) + len(n.actor_handle)
+        if n.additional_count > 0:
+            used_width += len(f" +{n.additional_count}")
 
         # For replies: show tone and content
         if n.type == NotificationType.REPLY:
@@ -450,11 +457,20 @@ class EngagementCard:
                     tone_color = "yellow"
                 elif any(w in tone_lower for w in ["support", "grateful", "excited", "encouraging", "friendly", "helpful", "positive"]):
                     tone_color = "green"
-                line.append(f" [{n.reply_tone}]", style=tone_color)
+                tone_text = f" [{n.reply_tone}]"
+                line.append(tone_text, style=tone_color)
+                used_width += len(tone_text)
 
             if n.reply_content:
-                # Truncate content for display
-                content = n.reply_content[:60] + "..." if len(n.reply_content) > 60 else n.reply_content
+                # Calculate remaining width for content (account for quotes and ellipsis)
+                content_width = self.width - 4  # Panel content width
+                remaining = content_width - used_width - 4  # 4 for ' "..."'
+                remaining = max(10, remaining)  # Minimum 10 chars
+
+                # Clean up content (remove newlines) and truncate
+                content = n.reply_content.replace("\n", " ").strip()
+                if len(content) > remaining:
+                    content = content[:remaining - 1] + "…"
                 line.append(f" \"{content}\"", style="dim italic")
         else:
             # Time for non-reply notifications
