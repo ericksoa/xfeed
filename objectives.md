@@ -1,4 +1,4 @@
-# Things Aaron Cares About
+# Things I Care About
 
 ## AI Research & Industry
 - New papers, especially on LLMs, reasoning, agents, and alignment

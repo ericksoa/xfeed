@@ -64,7 +64,6 @@ dissent_bonus_cap: 2           # Max boost for contrarian content
 
 Run tests with:
 ```bash
-cd /Users/aerickson/Documents/Claude\ Code\ Projects/xfeed
 source .venv/bin/activate
 pytest tests/ -v
 ```

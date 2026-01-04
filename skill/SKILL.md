@@ -20,7 +20,7 @@ Use this skill when users want to:
 ## Requirements
 
 The xfeed CLI must be installed and configured:
-- Python virtual environment at: `/Users/aerickson/Documents/Claude Code Projects/xfeed/.venv`
+- Python virtual environment in the project directory
 - Chrome browser logged into X (for cookie extraction)
 - Anthropic API key in `.env`
 
@@ -28,32 +28,32 @@ The xfeed CLI must be installed and configured:
 
 ### Fetch Filtered Timeline
 ```bash
-cd "/Users/aerickson/Documents/Claude Code Projects/xfeed" && source .venv/bin/activate && xfeed fetch --count 30
+xfeed fetch --count 30
 ```
 
 ### Fetch More Tweets
 ```bash
-cd "/Users/aerickson/Documents/Claude Code Projects/xfeed" && source .venv/bin/activate && xfeed fetch --count 50
+xfeed fetch --count 50
 ```
 
 ### Fetch with Lower Threshold (More Results)
 ```bash
-cd "/Users/aerickson/Documents/Claude Code Projects/xfeed" && source .venv/bin/activate && xfeed fetch --count 30 --threshold 5
+xfeed fetch --count 30 --threshold 5
 ```
 
 ### View Raw Unfiltered Feed
 ```bash
-cd "/Users/aerickson/Documents/Claude Code Projects/xfeed" && source .venv/bin/activate && xfeed fetch --count 20 --raw
+xfeed fetch --count 20 --raw
 ```
 
 ### View Current Objectives
 ```bash
-cd "/Users/aerickson/Documents/Claude Code Projects/xfeed" && source .venv/bin/activate && xfeed objectives
+xfeed objectives
 ```
 
 ### Check Configuration
 ```bash
-cd "/Users/aerickson/Documents/Claude Code Projects/xfeed" && source .venv/bin/activate && xfeed config --show
+xfeed config --show
 ```
 
 ## How It Works
