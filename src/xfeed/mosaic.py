@@ -774,18 +774,28 @@ class MosaicDisplay:
         elements.append(Align.center(bar))
         elements.append(Text())
 
-        # Anticipation messages based on elapsed time
+        # Anticipation messages based on elapsed time and phase
         tip = Text()
-        if elapsed < 3:
-            tip.append("Preparing your personalized feed...", style="dim italic")
-        elif elapsed < 6:
-            tip.append("Filtering out the noise...", style="dim italic")
-        elif elapsed < 10:
-            tip.append("Finding the signal...", style="dim italic")
-        elif elapsed < 15:
-            tip.append("Almost there...", style="dim italic")
+        phase = self.load_phase.lower()
+
+        if "fetching" in phase and "scoring" in phase:
+            # Combined fetch + score phase
+            if elapsed < 5:
+                tip.append("Opening browser session...", style="dim italic")
+            elif elapsed < 15:
+                tip.append("Scrolling your timeline...", style="dim italic")
+            elif elapsed < 25:
+                tip.append("Scoring with Claude Haiku...", style="dim italic")
+            elif elapsed < 35:
+                tip.append("Analyzing relevance...", style="dim italic")
+            else:
+                tip.append("Still working, hang tight...", style="dim italic")
+        elif "vibe" in phase:
+            tip.append("Identifying topics and themes...", style="dim italic")
+        elif "building" in phase:
+            tip.append("Arranging tiles...", style="dim italic")
         else:
-            tip.append("Still working, this can take a moment...", style="dim italic")
+            tip.append("Preparing your feed...", style="dim italic")
 
         elements.append(Align.center(tip))
 
@@ -988,15 +998,20 @@ async def run_mosaic(
         """Perform initial load with phase updates."""
         nonlocal my_handle
 
-        mosaic.load_phase = "Fetching tweets..."
+        # Phase 1: Fetch from X and score with Claude Haiku
+        mosaic.load_phase = "Fetching & scoring tweets..."
+        mosaic.load_start_time = time.time()  # Reset timer for this phase
         result = await fetch_func(count, threshold)
         tweets, my_handle, profile_tweets, notifications = parse_fetch_result(result)
 
+        # Phase 2: Extract vibes/topics
         vibes = []
         if tweets and vibe_func:
-            mosaic.load_phase = "Analyzing vibes..."
+            mosaic.load_phase = "Extracting vibes..."
+            mosaic.load_start_time = time.time()  # Reset timer for this phase
             vibes = vibe_func(tweets)
 
+        # Phase 3: Build display (fast)
         mosaic.load_phase = "Building mosaic..."
 
         # Compute engagement stats
