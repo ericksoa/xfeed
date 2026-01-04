@@ -254,9 +254,8 @@ def filter_tweets(
         if on_progress:
             on_progress(processed, len(tweets))
 
-    # Separate into regular and exploration candidates
-    regular_tweets: list[FilteredTweet] = []
-    exploration_candidates: list[FilteredTweet] = []
+    # Process all scored tweets with enhanced scoring
+    filtered_tweets: list[FilteredTweet] = []
 
     for scored in all_scored:
         factors = scored["factors"]
@@ -276,53 +275,20 @@ def filter_tweets(
             score = min(10, score + bonus)
             explanation += f" [dissent+{bonus}]"
 
-        ft = FilteredTweet(
-            tweet=scored["tweet"],
-            relevance_score=score,
-            reason=explanation,
-            is_superdunk=scored["superdunk"],
-        )
+        # Mark exploration candidates (for visibility, not filtering)
+        if scored["is_unknown_author"] and score >= exploration_min_quality:
+            explanation = f"[NEW] {explanation}"
 
-        # Route to regular or exploration
-        if scored["is_unknown_author"]:
-            # Unknown author - potential exploration candidate
-            author = scored["tweet"].author_handle
-            if score >= exploration_min_quality and not _is_author_in_cooldown(author, exploration_cooldown):
-                exploration_candidates.append(ft)
-            elif score >= threshold:
-                # Unknown but high enough score - include normally
-                regular_tweets.append(ft)
-        else:
-            # Known author - apply normal threshold
-            if score >= threshold:
-                regular_tweets.append(ft)
+        # Apply threshold filter (same as before)
+        if score >= threshold:
+            filtered_tweets.append(FilteredTweet(
+                tweet=scored["tweet"],
+                relevance_score=score,
+                reason=explanation,
+                is_superdunk=scored["superdunk"],
+            ))
 
-    # Sort regular tweets by score
-    regular_tweets.sort(key=lambda x: x.relevance_score, reverse=True)
+    # Sort by relevance score (highest first)
+    filtered_tweets.sort(key=lambda x: x.relevance_score, reverse=True)
 
-    # Sample exploration candidates (deterministic if seed provided)
-    rng = random.Random(seed)
-    max_exploration = max(1, int(len(regular_tweets) * exploration_rate))
-
-    # Shuffle exploration candidates for diversity
-    rng.shuffle(exploration_candidates)
-    selected_exploration = exploration_candidates[:max_exploration]
-
-    # Mark selected exploration authors as seen
-    for ft in selected_exploration:
-        _mark_author_seen(ft.tweet.author_handle)
-        ft.reason = f"[EXPLORE] {ft.reason}"
-
-    # Combine: regular tweets + exploration candidates interspersed
-    result = regular_tweets.copy()
-
-    # Insert exploration candidates at intervals
-    if selected_exploration and result:
-        interval = max(3, len(result) // (len(selected_exploration) + 1))
-        for i, exp_tweet in enumerate(selected_exploration):
-            insert_pos = min((i + 1) * interval, len(result))
-            result.insert(insert_pos, exp_tweet)
-    else:
-        result.extend(selected_exploration)
-
-    return result
+    return filtered_tweets
