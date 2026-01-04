@@ -573,7 +573,7 @@ class MosaicDisplay:
 
     def __init__(
         self,
-        tweets: list[FilteredTweet],
+        tweets: list[FilteredTweet] | None = None,
         vibes: list[TopicVibe] | None = None,
         engagement_stats: MyEngagementStats | None = None,
         refresh_callback=None,
@@ -582,6 +582,7 @@ class MosaicDisplay:
         count: int = 20,
     ):
         # Store all tweets for re-filtering when threshold changes
+        tweets = tweets or []
         self._all_tweets = sorted(tweets, key=lambda x: x.relevance_score, reverse=True)
         self.tweets = self._all_tweets  # Currently displayed tweets
         self.vibes = vibes or []
@@ -600,6 +601,11 @@ class MosaicDisplay:
         # Refresh state (updated by run_mosaic)
         self.is_refreshing = False
         self.refresh_elapsed = 0
+
+        # Initial loading state
+        self.is_initial_load = len(tweets) == 0
+        self.load_phase = "Connecting to X..."
+        self.load_start_time = time.time()
 
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for tweets with shortcut numbers."""
@@ -724,8 +730,87 @@ class MosaicDisplay:
         legend.append("🎯 superdunk", style="bright_green")
         return legend
 
+    def render_loading(self) -> Group:
+        """Render the loading screen with animated spinner."""
+        now = time.time()
+        elapsed = now - self.load_start_time
+
+        elements: list[RenderableType] = [
+            Align.center(self.render_header()),
+            Text(),
+            Text(),
+        ]
+
+        # Animated spinner frames
+        spinner_frames = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+        frame_idx = int(elapsed * 10) % len(spinner_frames)
+        spinner = spinner_frames[frame_idx]
+
+        # Progress bar animation
+        bar_width = 40
+        progress_pos = int((elapsed * 2) % bar_width)
+        bar = Text()
+        for i in range(bar_width):
+            dist = abs(i - progress_pos)
+            if dist == 0:
+                bar.append("█", style="bold red")
+            elif dist == 1:
+                bar.append("▓", style="red")
+            elif dist == 2:
+                bar.append("▒", style="yellow")
+            elif dist == 3:
+                bar.append("░", style="blue")
+            else:
+                bar.append("░", style="dim")
+
+        # Build loading display
+        loading_text = Text()
+        loading_text.append(f"\n\n{spinner} ", style="bold bright_red")
+        loading_text.append(self.load_phase, style="bold white")
+        loading_text.append(f" ({int(elapsed)}s)", style="dim")
+
+        elements.append(Align.center(loading_text))
+        elements.append(Text())
+        elements.append(Align.center(bar))
+        elements.append(Text())
+
+        # Anticipation messages based on elapsed time
+        tip = Text()
+        if elapsed < 3:
+            tip.append("Preparing your personalized feed...", style="dim italic")
+        elif elapsed < 6:
+            tip.append("Filtering out the noise...", style="dim italic")
+        elif elapsed < 10:
+            tip.append("Finding the signal...", style="dim italic")
+        elif elapsed < 15:
+            tip.append("Almost there...", style="dim italic")
+        else:
+            tip.append("Still working, this can take a moment...", style="dim italic")
+
+        elements.append(Align.center(tip))
+
+        # Add some visual flair
+        elements.append(Text())
+        elements.append(Text())
+
+        flair = Text()
+        flair.append("█ ", style="red")
+        flair.append("▓ ", style="yellow")
+        flair.append("▒ ", style="blue")
+        flair.append("░", style="dim")
+        elements.append(Align.center(flair))
+
+        elements.append(Text())
+        elements.append(Align.center(Text("[q]uit", style="dim")))
+
+        return Group(*elements)
+
     def render(self) -> Group:
         """Render the full mosaic display."""
+        # Show loading screen during initial load
+        if self.is_initial_load:
+            return self.render_loading()
+
         now = time.time()
         tiles = self.create_tiles()
 
@@ -873,37 +958,18 @@ async def run_mosaic(
     """Run the mosaic display with periodic refresh."""
     console = Console()
 
-    set_terminal_title("Loading...")
-    console.print("[dim]Fetching tweets for mosaic...[/dim]")
-    result = await fetch_func(count, threshold)
-    tweets, my_handle, profile_tweets, notifications = parse_fetch_result(result)
-
-    vibes = []
-    if tweets and vibe_func:
-        set_terminal_title("Analyzing...")
-        console.print("[dim]Analyzing vibe of the day...[/dim]")
-        vibes = vibe_func(tweets)
-
-    # Compute engagement stats with notifications
-    engagement_stats = compute_engagement_stats(
-        tweets, my_handle, notifications, profile_tweets
-    ) if tweets else None
-
-    if not tweets:
-        console.print("[yellow]No tweets found. Will retry on refresh.[/yellow]")
-
-    # Set title to top insight
-    set_terminal_title(get_insight(vibes, tweets))
-
+    # Create mosaic immediately with empty state (shows loading screen)
     mosaic = MosaicDisplay(
-        tweets,
-        vibes=vibes,
-        engagement_stats=engagement_stats,
+        tweets=None,  # Empty - triggers loading state
+        vibes=None,
+        engagement_stats=None,
         refresh_callback=fetch_func,
         refresh_interval=refresh_minutes * 60,
         threshold=threshold,
         count=count,
     )
+
+    set_terminal_title("Loading...")
 
     last_refresh = time.time()
     keyboard = KeyboardListener()
@@ -912,16 +978,56 @@ async def run_mosaic(
     # Background refresh state
     refresh_task: asyncio.Task | None = None
     refresh_started: float = 0
+    my_handle = None
 
     async def do_refresh(cnt: int, thresh: int):
         """Perform refresh in background."""
         return await fetch_func(cnt, thresh)
 
+    async def do_initial_load():
+        """Perform initial load with phase updates."""
+        nonlocal my_handle
+
+        mosaic.load_phase = "Fetching tweets..."
+        result = await fetch_func(count, threshold)
+        tweets, my_handle, profile_tweets, notifications = parse_fetch_result(result)
+
+        vibes = []
+        if tweets and vibe_func:
+            mosaic.load_phase = "Analyzing vibes..."
+            vibes = vibe_func(tweets)
+
+        mosaic.load_phase = "Building mosaic..."
+
+        # Compute engagement stats
+        engagement_stats = compute_engagement_stats(
+            tweets, my_handle, notifications, profile_tweets
+        ) if tweets else None
+
+        return tweets, vibes, engagement_stats, my_handle
+
+    # Start initial load immediately
+    initial_load_task = asyncio.create_task(do_initial_load())
+
     try:
-        with Live(mosaic.render(), console=console, refresh_per_second=4, screen=True) as live:
+        with Live(mosaic.render(), console=console, refresh_per_second=10, screen=True) as live:
             try:
                 while True:
                     now = time.time()
+
+                    # Check if initial load completed
+                    if initial_load_task is not None and initial_load_task.done():
+                        try:
+                            tweets, vibes, engagement_stats, my_handle = initial_load_task.result()
+                            if tweets:
+                                mosaic.update_tweets(tweets, vibes, engagement_stats)
+                                set_terminal_title(get_insight(vibes, tweets))
+                            mosaic.is_initial_load = False
+                            last_refresh = now
+                        except Exception as e:
+                            set_terminal_title(f"Error: {e}")
+                            mosaic.is_initial_load = False
+                        initial_load_task = None
 
                     # Check if background refresh completed
                     if refresh_task is not None and refresh_task.done():
@@ -997,7 +1103,13 @@ async def run_mosaic(
             except KeyboardInterrupt:
                 pass
     finally:
-        # Cancel any pending refresh task
+        # Cancel any pending tasks
+        if initial_load_task is not None and not initial_load_task.done():
+            initial_load_task.cancel()
+            try:
+                await initial_load_task
+            except asyncio.CancelledError:
+                pass
         if refresh_task is not None and not refresh_task.done():
             refresh_task.cancel()
             try:
