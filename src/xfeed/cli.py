@@ -416,5 +416,131 @@ def watch(interval: int, count: int, threshold: int, top: int):
         console.print("\n[magenta dim]XFEED watch stopped[/magenta dim]")
 
 
+@main.group()
+def authors():
+    """Manage author reputation tracking."""
+    pass
+
+
+@authors.command("list")
+@click.option("--trusted", is_flag=True, help="Show only trusted authors")
+@click.option("--rising", is_flag=True, help="Show rising authors")
+@click.option("--limit", "-n", default=20, help="Number of authors to show")
+def authors_list(trusted: bool, rising: bool, limit: int):
+    """List tracked authors and their reputation scores."""
+    from xfeed.reputation import get_author_db
+
+    db = get_author_db()
+
+    if rising:
+        authors_data = db.get_rising_authors(limit)
+        title = "Rising Authors"
+    elif trusted:
+        authors_data = db.get_trusted_authors(limit)
+        title = "Trusted Authors"
+    else:
+        authors_data = db.get_all_authors(limit)
+        title = "All Tracked Authors"
+
+    if not authors_data:
+        console.print("[dim]No authors tracked yet. Run 'xfeed mosaic' to start tracking.[/dim]")
+        return
+
+    table = Table(title=title)
+    table.add_column("Author", style="cyan")
+    table.add_column("Tweets", justify="right")
+    table.add_column("Avg", justify="right")
+    table.add_column("Recent", justify="right")
+    table.add_column("Trend")
+    table.add_column("Status")
+
+    for stats in authors_data:
+        trend_icon = {"rising": "↑", "stable": "→", "declining": "📉"}.get(stats.trend, "?")
+        trend_color = {"rising": "green", "stable": "dim", "declining": "red"}.get(stats.trend, "white")
+        trend_label = trend_icon if stats.trend != "declining" else "📉 crashin"
+        status = "[bold green]TRUSTED[/bold green]" if stats.is_trusted else "[dim]tracking[/dim]"
+
+        table.add_row(
+            stats.handle,
+            str(stats.total_tweets_seen),
+            f"{stats.avg_score:.1f}",
+            f"{stats.recent_avg_score:.1f}",
+            f"[{trend_color}]{trend_label}[/{trend_color}]",
+            status,
+        )
+
+    console.print(table)
+
+
+@authors.command("stats")
+def authors_stats():
+    """Show reputation database statistics."""
+    from xfeed.reputation import get_author_db
+
+    db = get_author_db()
+    stats = db.get_stats_summary()
+
+    table = Table(title="Reputation Database Stats")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+
+    table.add_row("Total Authors Tracked", str(stats["total_authors"]))
+    table.add_row("Total Tweets Scored", str(stats["total_scores"]))
+    table.add_row("Trusted Authors", str(stats["trusted_authors"]))
+
+    console.print(table)
+
+
+@authors.command("lookup")
+@click.argument("handle")
+def authors_lookup(handle: str):
+    """Look up reputation for a specific author."""
+    from xfeed.reputation import get_author_db
+
+    db = get_author_db()
+
+    # Normalize handle
+    if not handle.startswith("@"):
+        handle = f"@{handle}"
+
+    stats = db.get_author_stats(handle)
+
+    if not stats:
+        console.print(f"[yellow]No data found for {handle}[/yellow]")
+        return
+
+    trend_text = {
+        "rising": "↑ Rising",
+        "stable": "→ Stable",
+        "declining": "↓ Crashing out"
+    }.get(stats.trend, "Unknown")
+    boost = stats.reputation_boost()
+
+    panel_content = f"""[bold]{stats.display_name}[/bold] ({stats.handle})
+
+Tweets Seen: {stats.total_tweets_seen}
+Average Score: {stats.avg_score:.2f}
+Recent Average: {stats.recent_avg_score:.2f}
+Trend: {trend_text}
+Status: {"[bold green]TRUSTED[/bold green]" if stats.is_trusted else "[dim]Not yet trusted[/dim]"}
+Reputation Boost: +{boost:.1f}
+
+First Seen: {stats.first_seen.strftime("%Y-%m-%d")}
+Last Seen: {stats.last_seen.strftime("%Y-%m-%d %H:%M")}"""
+
+    console.print(Panel(panel_content, title=f"Author: {handle}"))
+
+
+@authors.command("clear")
+@click.confirmation_option(prompt="This will delete all author reputation data. Continue?")
+def authors_clear():
+    """Clear all author reputation data."""
+    from xfeed.reputation import get_author_db
+
+    db = get_author_db()
+    count = db.clear_all()
+    console.print(f"[green]Cleared reputation data for {count} authors.[/green]")
+
+
 if __name__ == "__main__":
     main()

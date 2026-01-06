@@ -57,6 +57,11 @@ DEFAULT_CONFIG = {
     # Contrarian settings
     "dissent_min_rigor": 6,  # Minimum rigor score for dissent bonus
     "dissent_bonus_cap": 2,  # Max boost for contrarian content
+    # Author reputation settings
+    "reputation_boost_enabled": True,  # Enable reputation-based score boost
+    "reputation_boost_max": 1.5,  # Maximum score boost for trusted authors
+    "reputation_minimum_samples": 5,  # Tweets needed before applying boost
+    "reputation_trusted_threshold": 7.5,  # Avg score to be "trusted"
 }
 
 

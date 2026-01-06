@@ -9,6 +9,7 @@ import anthropic
 
 from xfeed.config import get_api_key, load_config, load_objectives
 from xfeed.models import Tweet, FilteredTweet
+from xfeed.reputation import get_author_db
 
 
 # Track recently seen exploration authors to avoid repetition
@@ -206,6 +207,10 @@ def filter_tweets(
     dissent_min_rigor = config.get("dissent_min_rigor", 6)
     dissent_bonus_cap = config.get("dissent_bonus_cap", 2)
 
+    # Reputation settings
+    reputation_enabled = config.get("reputation_boost_enabled", True)
+    author_db = get_author_db() if reputation_enabled else None
+
     client = anthropic.Anthropic(api_key=api_key)
 
     # Create lookup dict for tweets
@@ -278,6 +283,28 @@ def filter_tweets(
         # Mark exploration candidates (for visibility, not filtering)
         if scored["is_unknown_author"] and score >= exploration_min_quality:
             explanation = f"[NEW] {explanation}"
+
+        tweet = scored["tweet"]
+
+        # Record score in reputation DB (always, for tracking)
+        if author_db:
+            author_db.record_tweet_score(
+                author_handle=tweet.author_handle,
+                display_name=tweet.author,
+                score=score,
+                tweet_id=tweet.id,
+            )
+
+            # Apply reputation boost for trusted authors
+            author_stats = author_db.get_author_stats(tweet.author_handle, config)
+            if author_stats:
+                boost = author_stats.reputation_boost(config)
+                if boost > 0:
+                    score = min(10, score + boost)
+                    explanation += f" [rep+{boost:.1f}]"
+                # Mark rising authors
+                if author_stats.trend == "rising" and author_stats.total_tweets_seen >= 3:
+                    explanation = f"[RISING] {explanation}"
 
         # Apply threshold filter (same as before)
         if score >= threshold:

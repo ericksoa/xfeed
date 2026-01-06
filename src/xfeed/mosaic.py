@@ -194,6 +194,10 @@ class MosaicTile:
         self.tile_id = tile_id
         self.shortcut_num = shortcut_num  # 1-9 for keyboard shortcut, None if no shortcut
 
+        # Reputation badges (parsed from reason string)
+        self.is_trusted = "[rep+" in tweet.reason
+        self.is_rising = tweet.reason.startswith("[RISING]")
+
         content_width = self.width - 6
         content_lines = max(1, self.height - 2)
 
@@ -255,6 +259,11 @@ class MosaicTile:
                 header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 18), style="bold cyan")
+            # Reputation badges
+            if self.is_trusted:
+                header.append(" ★", style="bold gold1")
+            elif self.is_rising:
+                header.append(" ↑", style="bold bright_green")
             # Engagement badges
             if t.is_by_me:
                 header.append(" 👤", style="bold bright_green")
@@ -292,6 +301,11 @@ class MosaicTile:
                 header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 12), style="cyan")
+            # Reputation badges
+            if self.is_trusted:
+                header.append(" ★", style="bold gold1")
+            elif self.is_rising:
+                header.append(" ↑", style="bold bright_green")
             # Engagement badges
             if t.is_by_me:
                 header.append(" 👤", style="bold bright_green")
@@ -318,6 +332,11 @@ class MosaicTile:
                 header.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 10), style="cyan")
+            # Reputation badges (compact)
+            if self.is_trusted:
+                header.append(" ★", style="gold1")
+            elif self.is_rising:
+                header.append(" ↑", style="bright_green")
             # Engagement badges (compact)
             if t.is_by_me:
                 header.append(" 👤", style="bright_green")
@@ -340,6 +359,11 @@ class MosaicTile:
                 body.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
             body.append(f"[{self.score}] ", style=f"{fg}")
             body.append(truncate(t.author_handle, content_width - 12), style="dim cyan")
+            # Reputation badges (minimal)
+            if self.is_trusted:
+                body.append(" ★", style="gold1")
+            elif self.is_rising:
+                body.append(" ↑", style="bright_green")
             # Engagement badges (minimal)
             if t.is_by_me:
                 body.append(" 👤", style="bright_green")
@@ -796,6 +820,9 @@ class MosaicDisplay:
         legend.append("▓ 7-8 ", style="yellow")
         legend.append("▒ 5-6 ", style="blue")
         legend.append("░ <5 ", style="dim")
+        legend.append("│ ", style="dim")
+        legend.append("★ trusted ", style="gold1")
+        legend.append("↑ rising ", style="bright_green")
         legend.append("│ ", style="dim")
         legend.append("🎯 superdunk", style="bright_green")
         return legend
