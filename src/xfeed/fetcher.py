@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import browser_cookie3
 from playwright.async_api import async_playwright, Page
 
-from xfeed.models import Tweet, QuotedTweet, Notification, NotificationType
+from xfeed.models import Tweet, QuotedTweet, Notification, NotificationType, ThreadContext
 
 
 # =============================================================================
@@ -891,3 +891,127 @@ async def fetch_all_engagement(
         notifications[:notifications_count],
         my_handle,
     )
+
+
+async def fetch_thread(
+    tweet_url: str,
+    max_parents: int = 5,
+    max_replies: int = 10,
+    headless: bool = True,
+) -> ThreadContext | None:
+    """
+    Fetch thread context for a tweet by navigating to its detail page.
+
+    On X, the tweet detail page shows:
+    - Parent tweets above (conversation context)
+    - The main tweet
+    - Replies below
+
+    Args:
+        tweet_url: Full URL to the tweet (e.g., https://x.com/user/status/123)
+        max_parents: Maximum parent tweets to fetch (context above)
+        max_replies: Maximum replies to fetch
+        headless: Run browser in headless mode
+
+    Returns:
+        ThreadContext with parent and reply tweets, or None on failure
+    """
+    # Extract tweet ID from URL for matching
+    if "/status/" not in tweet_url:
+        return None
+
+    target_tweet_id = tweet_url.split("/status/")[-1].split("?")[0].split("/")[0]
+    if not target_tweet_id:
+        return None
+
+    cookies = get_x_session_from_chrome()
+    if not cookies:
+        return None
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        )
+        await context.add_cookies(cookies)
+        page = await context.new_page()
+
+        try:
+            # Navigate to tweet detail page
+            await page.goto(tweet_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(_page_load_delay())
+
+            # Wait for tweets to load
+            try:
+                await page.wait_for_selector(TWEET_SELECTOR, timeout=10000)
+            except Exception:
+                await browser.close()
+                return None
+
+            # Get logged-in user for engagement detection
+            my_handle = await get_logged_in_user(page)
+
+            # Collect all tweets on the page
+            parent_tweets: list[Tweet] = []
+            reply_tweets: list[Tweet] = []
+            original_tweet: Tweet | None = None
+
+            # First pass: collect all visible tweets
+            articles = await page.query_selector_all(TWEET_SELECTOR)
+
+            found_original = False
+            for article in articles:
+                tweet = await extract_tweet_data(article, page, my_handle)
+                if not tweet:
+                    continue
+
+                # Check if this is the target tweet
+                if tweet.id == target_tweet_id:
+                    original_tweet = tweet
+                    found_original = True
+                elif not found_original:
+                    # Before target = parent/context
+                    if len(parent_tweets) < max_parents:
+                        parent_tweets.append(tweet)
+                else:
+                    # After target = replies
+                    if len(reply_tweets) < max_replies:
+                        reply_tweets.append(tweet)
+
+            # If we didn't find the original tweet, something went wrong
+            if not original_tweet:
+                await browser.close()
+                return None
+
+            # Scroll down to get more replies if needed
+            scroll_count = 0
+            max_scrolls = 3
+            while len(reply_tweets) < max_replies and scroll_count < max_scrolls:
+                await page.evaluate("window.scrollBy(0, window.innerHeight)")
+                await page.wait_for_timeout(_scroll_delay())
+                scroll_count += 1
+
+                articles = await page.query_selector_all(TWEET_SELECTOR)
+                for article in articles:
+                    tweet = await extract_tweet_data(article, page, my_handle)
+                    if not tweet or tweet.id == target_tweet_id:
+                        continue
+
+                    # Check if we already have this tweet
+                    existing_ids = {t.id for t in reply_tweets}
+                    if tweet.id not in existing_ids and len(reply_tweets) < max_replies:
+                        # Only add tweets that appear after our target (replies)
+                        reply_tweets.append(tweet)
+
+            await browser.close()
+
+            return ThreadContext(
+                original_tweet=original_tweet,
+                parent_tweets=parent_tweets,
+                reply_tweets=reply_tweets,
+            )
+
+        except Exception:
+            await browser.close()
+            return None

@@ -72,6 +72,25 @@ class FilteredTweet:
 
 
 @dataclass
+class ThreadContext:
+    """Thread context for a selected tweet."""
+
+    original_tweet: Tweet  # The tweet the user selected
+    parent_tweets: list[Tweet] = field(default_factory=list)  # Context above (oldest first)
+    reply_tweets: list[Tweet] = field(default_factory=list)  # Replies below (oldest first)
+
+    @property
+    def total_count(self) -> int:
+        """Total tweets in thread."""
+        return len(self.parent_tweets) + 1 + len(self.reply_tweets)
+
+    @property
+    def all_tweets(self) -> list[Tweet]:
+        """All tweets in chronological order."""
+        return self.parent_tweets + [self.original_tweet] + self.reply_tweets
+
+
+@dataclass
 class TopicVibe:
     """Represents a topic theme extracted from tweets."""
 

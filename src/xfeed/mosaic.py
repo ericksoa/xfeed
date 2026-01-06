@@ -18,7 +18,7 @@ from rich.table import Table
 from rich.align import Align
 from rich import box
 
-from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats, Notification, NotificationType
+from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats, Notification, NotificationType, ThreadContext, Tweet
 
 
 class KeyboardListener:
@@ -658,6 +658,99 @@ def compute_engagement_stats(
     return stats
 
 
+class ThreadOverlay:
+    """Overlay panel showing thread context for a selected tweet."""
+
+    def __init__(self, context: ThreadContext, width: int, height: int):
+        self.context = context
+        self.width = width
+        self.height = height
+        self.scroll_offset = 0
+
+    def _render_thread_tweet(self, tweet: Tweet, highlight: bool = False) -> Text:
+        """Render a single tweet in thread format."""
+        line = Text()
+
+        if highlight:
+            line.append(">>> ", style="bold bright_yellow")
+        else:
+            line.append("    ", style="dim")
+
+        line.append(f"{tweet.author_handle}", style="cyan")
+        line.append(f" ({tweet.formatted_time})", style="dim")
+        line.append("\n")
+
+        # Indent content
+        prefix = "    " if not highlight else "    "
+        content = tweet.content.replace("\n", " ")
+        if len(content) > 300:
+            content = content[:297] + "..."
+
+        # Wrap content to fit width
+        content_width = self.width - 10
+        words = content.split()
+        current_line = prefix
+        for word in words:
+            if len(current_line) + len(word) + 1 > content_width:
+                line.append(current_line + "\n", style="white" if highlight else "dim")
+                current_line = prefix + word + " "
+            else:
+                current_line += word + " "
+        if current_line.strip():
+            line.append(current_line.rstrip(), style="white" if highlight else "dim")
+
+        return line
+
+    def render(self) -> Panel:
+        """Render the thread overlay as a panel."""
+        lines: list[Text] = []
+
+        # Header
+        header = Text()
+        header.append("THREAD CONTEXT", style="bold bright_cyan")
+        header.append(f"  ({self.context.total_count} tweets)", style="dim")
+        lines.append(header)
+        lines.append(Text())
+
+        # Parent tweets (context above)
+        if self.context.parent_tweets:
+            for tweet in self.context.parent_tweets:
+                lines.append(self._render_thread_tweet(tweet, highlight=False))
+                lines.append(Text())
+
+            # Separator
+            sep = Text("─" * (self.width - 8), style="dim cyan")
+            lines.append(sep)
+            lines.append(Text())
+
+        # Main tweet (highlighted)
+        lines.append(self._render_thread_tweet(self.context.original_tweet, highlight=True))
+        lines.append(Text())
+
+        # Replies below
+        if self.context.reply_tweets:
+            # Separator
+            sep = Text("─" * (self.width - 8), style="dim cyan")
+            lines.append(sep)
+            lines.append(Text())
+
+            for tweet in self.context.reply_tweets:
+                lines.append(self._render_thread_tweet(tweet, highlight=False))
+                lines.append(Text())
+
+        body = Text("\n").join(lines)
+
+        return Panel(
+            body,
+            title="[bold cyan]Thread View[/bold cyan]",
+            subtitle="[dim][Esc] close[/dim]",
+            box=box.DOUBLE,
+            border_style="bright_cyan",
+            width=self.width,
+            padding=(1, 2),
+        )
+
+
 class MosaicDisplay:
     """Live mosaic display of filtered tweets."""
 
@@ -697,6 +790,12 @@ class MosaicDisplay:
         self.is_initial_load = len(tweets) == 0
         self.load_phase = "Connecting to X..."
         self.load_start_time = time.time()
+
+        # Thread overlay state
+        self.thread_overlay_visible: bool = False
+        self.thread_context: ThreadContext | None = None
+        self.thread_loading: bool = False
+        self.selected_tweet_num: int | None = None
 
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for tweets with shortcut numbers."""
@@ -827,6 +926,43 @@ class MosaicDisplay:
         legend.append("🎯 superdunk", style="bright_green")
         return legend
 
+    def render_thread_overlay(self) -> Group:
+        """Render the thread overlay on top of a dimmed mosaic."""
+        elements: list[RenderableType] = [
+            Align.center(self.render_header()),
+            Text(),
+        ]
+
+        if self.thread_context:
+            overlay_width = min(100, int(self.console.width * 0.85))
+            overlay = ThreadOverlay(
+                self.thread_context,
+                width=overlay_width,
+                height=30,
+            )
+            elements.append(Text())
+            elements.append(Align.center(overlay.render()))
+
+        return Group(*elements)
+
+    def render_thread_loading(self) -> Group:
+        """Render loading indicator while fetching thread."""
+        elements: list[RenderableType] = [
+            Align.center(self.render_header()),
+            Text(),
+            Text(),
+            Text(),
+        ]
+
+        loading = Text()
+        loading.append("⟳ ", style="bold bright_cyan")
+        loading.append(f"Loading thread for tweet #{self.selected_tweet_num}...", style="cyan")
+        elements.append(Align.center(loading))
+        elements.append(Text())
+        elements.append(Align.center(Text("[Esc] cancel", style="dim")))
+
+        return Group(*elements)
+
     def render_loading(self) -> Group:
         """Render the loading screen with animated spinner."""
         now = time.time()
@@ -918,6 +1054,14 @@ class MosaicDisplay:
         if self.is_initial_load:
             return self.render_loading()
 
+        # Show thread overlay if visible
+        if self.thread_overlay_visible and self.thread_context:
+            return self.render_thread_overlay()
+
+        # Show thread loading indicator
+        if self.thread_loading:
+            return self.render_thread_loading()
+
         now = time.time()
         tiles = self.create_tiles()
 
@@ -980,7 +1124,7 @@ class MosaicDisplay:
 
         elements.append(Text())
         elements.append(Align.center(self.render_legend()))
-        elements.append(Align.center(Text("[1-9] open  [+/-] threshold  [c]ount  [o]bjectives  [r]efresh  [q]uit", style="dim")))
+        elements.append(Align.center(Text("[1-9] open  [t] thread  [+/-] threshold  [c]ount  [o]bjectives  [r]efresh  [q]uit", style="dim")))
 
         return Group(*elements)
 
@@ -1088,6 +1232,9 @@ async def run_mosaic(
     my_handle = None
     vibe_task = None
     vibe_task_data = None
+
+    # Thread fetch state
+    thread_task: asyncio.Task | None = None
 
     async def do_refresh(cnt: int, thresh: int):
         """Perform refresh in background."""
@@ -1197,12 +1344,41 @@ async def run_mosaic(
                         mosaic.is_refreshing = False
                         mosaic.refresh_phase = ""
 
+                    # Check if thread fetch completed
+                    if thread_task is not None and thread_task.done():
+                        try:
+                            thread_context = thread_task.result()
+                            if thread_context:
+                                mosaic.thread_context = thread_context
+                                mosaic.thread_overlay_visible = True
+                        except Exception:
+                            pass  # Thread fetch failed silently
+                        thread_task = None
+                        mosaic.thread_loading = False
+
                     # Handle keyboard input - process all queued keys
                     keys = keyboard.drain_keys()
                     should_quit = False
                     should_refresh = False
 
                     for key in keys:
+                        # Handle overlay mode differently
+                        if mosaic.thread_overlay_visible:
+                            if key == '\x1b' or key == 'q':  # Escape or q closes overlay
+                                mosaic.thread_overlay_visible = False
+                                mosaic.thread_context = None
+                            continue  # Don't process other keys when overlay visible
+
+                        # Handle thread loading cancellation
+                        if mosaic.thread_loading:
+                            if key == '\x1b' or key == 'q':  # Cancel loading
+                                if thread_task and not thread_task.done():
+                                    thread_task.cancel()
+                                mosaic.thread_loading = False
+                                thread_task = None
+                            continue
+
+                        # Normal mode
                         if key == 'q':
                             should_quit = True
                             break
@@ -1210,9 +1386,18 @@ async def run_mosaic(
                             should_refresh = True
                         elif key and key.isdigit() and key != '0':
                             num = int(key)
+                            mosaic.selected_tweet_num = num  # Track selection
                             url = mosaic.get_url_for_shortcut(num)
                             if url:
                                 webbrowser.open(url)
+                        elif key == 't':
+                            # Load thread for selected tweet
+                            if mosaic.selected_tweet_num and thread_task is None:
+                                url = mosaic.get_url_for_shortcut(mosaic.selected_tweet_num)
+                                if url:
+                                    from xfeed.fetcher import fetch_thread
+                                    mosaic.thread_loading = True
+                                    thread_task = asyncio.create_task(fetch_thread(url))
                         elif key == '+' or key == '=':
                             if mosaic.threshold < 10:
                                 mosaic.threshold += 1
@@ -1270,6 +1455,12 @@ async def run_mosaic(
             try:
                 vibe_task.cancel()
             except Exception:
+                pass
+        if thread_task is not None and not thread_task.done():
+            thread_task.cancel()
+            try:
+                await thread_task
+            except asyncio.CancelledError:
                 pass
         keyboard.stop()
         # Restore default terminal title
