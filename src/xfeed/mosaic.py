@@ -264,8 +264,9 @@ class MosaicTile:
 
         # Add link summary pages (marked specially for rendering)
         self.link_page_indices: set[int] = set()
-        if tweet.link_summaries:
-            for link_sum in tweet.link_summaries[:2]:  # Max 2 links
+        link_summaries = getattr(tweet, 'link_summaries', None) or []
+        if link_summaries:
+            for link_sum in link_summaries[:2]:  # Max 2 links
                 link_text = f"🔗 {link_sum.summary}"
                 link_pages = split_into_pages(link_text, content_width, content_lines)
                 for _ in link_pages:
