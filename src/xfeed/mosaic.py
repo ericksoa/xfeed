@@ -911,12 +911,15 @@ class MosaicDisplay:
         self.thread_cache_max_seconds: float = 300.0  # Force fresh fetch after this
         self.thread_background_refresh: bool = False  # True when refreshing cached thread
         self.thread_fetch_url: str | None = None  # URL being fetched (for caching)
+        # Grid layout for arrow navigation: list of rows, each row is list of shortcut numbers
+        self.shortcut_grid: list[list[int]] = []
 
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for tweets with shortcut numbers."""
         tiles = []
         width = self.console.width
         self.url_shortcuts = {}
+        self.shortcut_grid = []
 
         # Assign shortcuts in display order: large, medium, small
         large = [t for t in self.tweets if t.relevance_score >= 9][:3]
@@ -932,6 +935,32 @@ class MosaicDisplay:
         # Store URLs for shortcuts
         for i, tweet in enumerate(ordered_tweets):
             self.url_shortcuts[i + 1] = tweet.tweet.url
+
+        # Build grid layout matching visual display
+        # Large tiles: 1 per row
+        shortcut_idx = 1
+        for _ in large[:3]:
+            if shortcut_idx <= len(ordered_tweets):
+                self.shortcut_grid.append([shortcut_idx])
+                shortcut_idx += 1
+
+        # Medium tiles: 2 per row
+        medium_shortcuts = []
+        for _ in medium[:6]:
+            if shortcut_idx <= len(ordered_tweets):
+                medium_shortcuts.append(shortcut_idx)
+                shortcut_idx += 1
+        for i in range(0, len(medium_shortcuts), 2):
+            self.shortcut_grid.append(medium_shortcuts[i:i+2])
+
+        # Small tiles: 3 per row
+        small_shortcuts = []
+        for _ in small[:9]:
+            if shortcut_idx <= len(ordered_tweets):
+                small_shortcuts.append(shortcut_idx)
+                shortcut_idx += 1
+        for i in range(0, len(small_shortcuts), 3):
+            self.shortcut_grid.append(small_shortcuts[i:i+3])
 
         for i, tweet in enumerate(self.tweets):
             if tweet.relevance_score >= 9:
@@ -964,6 +993,70 @@ class MosaicDisplay:
             self.count = self.count_options[(idx + 1) % len(self.count_options)]
         else:
             self.count = self.count_options[0]
+
+    def _find_in_grid(self, shortcut: int) -> tuple[int, int] | None:
+        """Find (row, col) position of a shortcut in the grid."""
+        for row_idx, row in enumerate(self.shortcut_grid):
+            for col_idx, s in enumerate(row):
+                if s == shortcut:
+                    return row_idx, col_idx
+        return None
+
+    def navigate_grid(self, direction: str) -> int | None:
+        """
+        Navigate the grid in a direction from current selection.
+
+        Args:
+            direction: 'up', 'down', 'left', or 'right'
+
+        Returns:
+            New shortcut number, or None if no movement possible
+        """
+        if not self.shortcut_grid:
+            return None
+
+        # If no selection, pick a sensible default
+        if self.selected_shortcut is None:
+            if direction == 'down' or direction == 'right':
+                return self.shortcut_grid[0][0] if self.shortcut_grid else None
+            else:  # up or left
+                last_row = self.shortcut_grid[-1]
+                return last_row[-1] if last_row else None
+
+        pos = self._find_in_grid(self.selected_shortcut)
+        if pos is None:
+            return None
+
+        row_idx, col_idx = pos
+        current_row = self.shortcut_grid[row_idx]
+
+        if direction == 'left':
+            if col_idx > 0:
+                return current_row[col_idx - 1]
+            return None  # Already at left edge
+
+        elif direction == 'right':
+            if col_idx < len(current_row) - 1:
+                return current_row[col_idx + 1]
+            return None  # Already at right edge
+
+        elif direction == 'up':
+            if row_idx > 0:
+                prev_row = self.shortcut_grid[row_idx - 1]
+                # Try same column, or rightmost if row is shorter
+                new_col = min(col_idx, len(prev_row) - 1)
+                return prev_row[new_col]
+            return None  # Already at top
+
+        elif direction == 'down':
+            if row_idx < len(self.shortcut_grid) - 1:
+                next_row = self.shortcut_grid[row_idx + 1]
+                # Try same column, or rightmost if row is shorter
+                new_col = min(col_idx, len(next_row) - 1)
+                return next_row[new_col]
+            return None  # Already at bottom
+
+        return None
 
     def get_cached_thread(self, url: str) -> tuple[ThreadContext | None, bool]:
         """
@@ -1311,7 +1404,7 @@ class MosaicDisplay:
 
         elements.append(Text())
         elements.append(Align.center(self.render_legend()))
-        elements.append(Align.center(Text("[1-9] select  [o]pen  [t]hread  [+/-] threshold  [c]ount  obj[e]ctives  [r]efresh  [q]uit", style="dim")))
+        elements.append(Align.center(Text("[←↑↓→/1-9] select  [o]pen  [t]hread  [+/-] threshold  [c]ount  obj[e]ctives  [r]efresh  [q]uit", style="dim")))
 
         return Group(*elements)
 
@@ -1643,6 +1736,12 @@ async def run_mosaic(
                             break
                         elif key == 'r':
                             should_refresh = True
+                        elif key in ('up', 'down', 'left', 'right'):
+                            # Grid navigation with arrow keys
+                            new_shortcut = mosaic.navigate_grid(key)
+                            if new_shortcut is not None:
+                                mosaic.selected_shortcut = new_shortcut
+                                mosaic.selected_tweet_num = new_shortcut
                         elif key and key.isdigit() and key != '0':
                             # Select tweet (visual highlight) - don't open yet
                             num = int(key)
