@@ -724,13 +724,14 @@ def compute_engagement_stats(
 class ThreadOverlay:
     """Overlay panel showing thread context for a selected tweet."""
 
-    def __init__(self, context: ThreadContext, width: int, height: int, selected_index: int = -1, stack_depth: int = 0):
+    def __init__(self, context: ThreadContext, width: int, height: int, selected_index: int = -1, stack_depth: int = 0, is_refreshing: bool = False):
         self.context = context
         self.width = width
         self.height = height
         self.scroll_offset = 0
         self.selected_index = selected_index  # -1 = original tweet, 0+ = reply index
         self.stack_depth = stack_depth  # How deep in the navigation stack
+        self.is_refreshing = is_refreshing  # True when background refresh in progress
 
     def _render_thread_tweet(self, tweet: Tweet, is_original: bool = False, is_selected: bool = False, index: int | None = None) -> Text:
         """Render a single tweet in thread format."""
@@ -789,6 +790,8 @@ class ThreadOverlay:
         header.append(f"  ({self.context.total_count} tweets)", style="dim")
         if self.stack_depth > 0:
             header.append(f"  [depth: {self.stack_depth + 1}]", style="dim magenta")
+        if self.is_refreshing:
+            header.append("  ⟳ refreshing...", style="yellow")
         lines.append(header)
         lines.append(Text())
 
@@ -902,6 +905,12 @@ class MosaicDisplay:
         # Thread navigation state
         self.thread_stack: list[ThreadContext] = []  # Stack for back navigation
         self.thread_selected_index: int = -1  # -1 = original tweet, 0+ = reply index
+        # Thread cache: URL -> (ThreadContext, timestamp)
+        self.thread_cache: dict[str, tuple[ThreadContext, float]] = {}
+        self.thread_cache_fresh_seconds: float = 60.0  # Show cached, but refresh after this
+        self.thread_cache_max_seconds: float = 300.0  # Force fresh fetch after this
+        self.thread_background_refresh: bool = False  # True when refreshing cached thread
+        self.thread_fetch_url: str | None = None  # URL being fetched (for caching)
 
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for tweets with shortcut numbers."""
@@ -955,6 +964,73 @@ class MosaicDisplay:
             self.count = self.count_options[(idx + 1) % len(self.count_options)]
         else:
             self.count = self.count_options[0]
+
+    def get_cached_thread(self, url: str) -> tuple[ThreadContext | None, bool]:
+        """
+        Get a cached thread if available.
+
+        Returns:
+            (thread_context, needs_refresh) where:
+            - thread_context is the cached thread or None
+            - needs_refresh is True if cache is stale and should refresh in background
+        """
+        if url not in self.thread_cache:
+            return None, False
+
+        context, cached_at = self.thread_cache[url]
+        age = time.time() - cached_at
+
+        # Too old - don't use cache at all
+        if age > self.thread_cache_max_seconds:
+            return None, False
+
+        # Fresh enough to show, but maybe stale enough to refresh
+        needs_refresh = age > self.thread_cache_fresh_seconds
+        return context, needs_refresh
+
+    def cache_thread(self, url: str, context: ThreadContext) -> None:
+        """Cache a thread context with current timestamp."""
+        self.thread_cache[url] = (context, time.time())
+
+    def update_cached_thread(self, url: str, new_context: ThreadContext) -> None:
+        """
+        Update a cached thread with fresh data.
+
+        If this thread is currently being displayed, update the view.
+        """
+        self.cache_thread(url, new_context)
+
+        # If this thread is currently visible, update the display
+        if self.thread_overlay_visible and self.thread_context:
+            # Check if the original tweet URL matches
+            if self.thread_context.original_tweet.url == url:
+                # Merge new replies into current view
+                self._merge_thread_update(new_context)
+
+    def _merge_thread_update(self, new_context: ThreadContext) -> None:
+        """Merge new thread data into current view without disrupting selection."""
+        if not self.thread_context:
+            return
+
+        # Keep the same original tweet, but update replies
+        old_reply_ids = {t.id for t in self.thread_context.reply_tweets}
+        new_replies = []
+
+        # Keep existing replies in order, then add any new ones
+        for reply in self.thread_context.reply_tweets:
+            # Find updated version if available
+            updated = next((r for r in new_context.reply_tweets if r.id == reply.id), reply)
+            new_replies.append(updated)
+
+        # Add any brand new replies at the end
+        for reply in new_context.reply_tweets:
+            if reply.id not in old_reply_ids:
+                new_replies.append(reply)
+
+        self.thread_context.reply_tweets = new_replies
+
+        # Update parent tweets too
+        self.thread_context.parent_tweets = new_context.parent_tweets
 
     def render_vibe_section(self) -> RenderableType | None:
         """Render the vibe of the day section."""
@@ -1049,6 +1125,7 @@ class MosaicDisplay:
                 height=30,
                 selected_index=self.thread_selected_index,
                 stack_depth=len(self.thread_stack),
+                is_refreshing=self.thread_background_refresh,
             )
             elements.append(Text())
             elements.append(Align.center(overlay.render()))
@@ -1346,6 +1423,9 @@ async def run_mosaic(
     # Thread fetch state
     thread_task: asyncio.Task | None = None
 
+    # Import fetch_thread once for thread operations
+    from xfeed.fetcher import fetch_thread
+
     async def do_refresh(cnt: int, thresh: int):
         """Perform refresh in background."""
         return await fetch_func(cnt, thresh)
@@ -1459,21 +1539,31 @@ async def run_mosaic(
                         try:
                             thread_context = thread_task.result()
                             if thread_context:
-                                mosaic.thread_context = thread_context
-                                mosaic.thread_overlay_visible = True
-                                mosaic.thread_selected_index = -1  # Reset selection
+                                if mosaic.thread_background_refresh:
+                                    # Background refresh - update existing view
+                                    if mosaic.thread_fetch_url:
+                                        mosaic.update_cached_thread(mosaic.thread_fetch_url, thread_context)
+                                else:
+                                    # Initial fetch - cache and display
+                                    if mosaic.thread_fetch_url:
+                                        mosaic.cache_thread(mosaic.thread_fetch_url, thread_context)
+                                    mosaic.thread_context = thread_context
+                                    mosaic.thread_overlay_visible = True
+                                    mosaic.thread_selected_index = -1
                             else:
                                 # Thread fetch returned None - pop stack if we were diving
-                                if mosaic.thread_stack:
+                                if not mosaic.thread_background_refresh and mosaic.thread_stack:
                                     mosaic.thread_context = mosaic.thread_stack.pop()
                                     mosaic.thread_overlay_visible = True
                         except Exception:
                             # Thread fetch failed - pop stack if we were diving
-                            if mosaic.thread_stack:
+                            if not mosaic.thread_background_refresh and mosaic.thread_stack:
                                 mosaic.thread_context = mosaic.thread_stack.pop()
                                 mosaic.thread_overlay_visible = True
                         thread_task = None
                         mosaic.thread_loading = False
+                        mosaic.thread_background_refresh = False
+                        mosaic.thread_fetch_url = None
 
                     # Handle keyboard input - process keys with proper escape sequence handling
                     should_quit = False
@@ -1500,14 +1590,28 @@ async def run_mosaic(
                                 # Enter/Right: dive into selected tweet's thread
                                 if mosaic.thread_context and mosaic.thread_selected_index >= 0:
                                     selected_reply = mosaic.thread_context.reply_tweets[mosaic.thread_selected_index]
-                                    if selected_reply.has_thread_context and thread_task is None:
+                                    if selected_reply.has_thread_context and selected_reply.url and thread_task is None:
                                         # Push current context onto stack
                                         mosaic.thread_stack.append(mosaic.thread_context)
-                                        # Load the subthread
-                                        from xfeed.fetcher import fetch_thread
-                                        mosaic.thread_loading = True
-                                        mosaic.thread_overlay_visible = False
-                                        thread_task = asyncio.create_task(fetch_thread(selected_reply.url))
+
+                                        # Check cache first
+                                        cached, needs_refresh = mosaic.get_cached_thread(selected_reply.url)
+                                        if cached:
+                                            # Show cached immediately
+                                            mosaic.thread_context = cached
+                                            mosaic.thread_selected_index = -1
+
+                                            # Start background refresh if stale
+                                            if needs_refresh:
+                                                mosaic.thread_background_refresh = True
+                                                mosaic.thread_fetch_url = selected_reply.url
+                                                thread_task = asyncio.create_task(fetch_thread(selected_reply.url))
+                                        else:
+                                            # Not cached - show loading and fetch
+                                            mosaic.thread_loading = True
+                                            mosaic.thread_overlay_visible = False
+                                            mosaic.thread_fetch_url = selected_reply.url
+                                            thread_task = asyncio.create_task(fetch_thread(selected_reply.url))
                             elif key == 'escape' or key == 'left':
                                 # Escape or Left: go back or close
                                 if mosaic.thread_stack:
@@ -1528,6 +1632,8 @@ async def run_mosaic(
                                 if thread_task and not thread_task.done():
                                     thread_task.cancel()
                                 mosaic.thread_loading = False
+                                mosaic.thread_fetch_url = None
+                                mosaic.thread_background_refresh = False
                                 thread_task = None
                             continue
 
@@ -1554,11 +1660,26 @@ async def run_mosaic(
                             if mosaic.selected_tweet_num and thread_task is None:
                                 url = mosaic.get_url_for_shortcut(mosaic.selected_tweet_num)
                                 if url:
-                                    from xfeed.fetcher import fetch_thread
-                                    mosaic.thread_loading = True
                                     mosaic.thread_stack = []  # Clear stack for fresh thread
                                     mosaic.thread_selected_index = -1
-                                    thread_task = asyncio.create_task(fetch_thread(url))
+
+                                    # Check cache first
+                                    cached, needs_refresh = mosaic.get_cached_thread(url)
+                                    if cached:
+                                        # Show cached immediately
+                                        mosaic.thread_context = cached
+                                        mosaic.thread_overlay_visible = True
+
+                                        # Start background refresh if stale
+                                        if needs_refresh:
+                                            mosaic.thread_background_refresh = True
+                                            mosaic.thread_fetch_url = url
+                                            thread_task = asyncio.create_task(fetch_thread(url))
+                                    else:
+                                        # Not cached - show loading and fetch
+                                        mosaic.thread_loading = True
+                                        mosaic.thread_fetch_url = url
+                                        thread_task = asyncio.create_task(fetch_thread(url))
                         elif key == '+' or key == '=':
                             if mosaic.threshold < 10:
                                 mosaic.threshold += 1
