@@ -284,7 +284,8 @@ def ticker(rotate: int, refresh: int, count: int, threshold: int, compact: bool)
 @click.option("--count", "-n", default=20, help="Tweets to fetch (default: 20)")
 @click.option("--threshold", "-t", default=5, help="Relevance threshold (default: 5)")
 @click.option("--engagement/--no-engagement", default=True, help="Fetch notifications for engagement data")
-def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
+@click.option("--fresh", "-f", is_flag=True, help="Skip cache and force fresh fetch")
+def mosaic(refresh: int, count: int, threshold: int, engagement: bool, fresh: bool):
     """Block mosaic visualization - tweets sized by relevance.
 
     A visual heatmap where tweet tiles are sized and colored based on
@@ -338,6 +339,7 @@ def mosaic(refresh: int, count: int, threshold: int, engagement: bool):
         refresh_minutes=refresh,
         count=count,
         threshold=threshold,
+        skip_cache=fresh,
     ))
 
 

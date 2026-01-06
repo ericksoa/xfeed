@@ -1,12 +1,17 @@
 """Session state tracking with SQLite storage."""
 
+import json
+import pickle
 import sqlite3
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from xfeed.config import CONFIG_DIR, ensure_config_dir
 
 DB_FILE = CONFIG_DIR / "authors.db"
+CACHE_FILE = CONFIG_DIR / "tweet_cache.pkl"
 
 
 class SessionDB:
@@ -75,3 +80,81 @@ def get_session_db() -> SessionDB:
     if _session_db is None:
         _session_db = SessionDB()
     return _session_db
+
+
+# Tweet cache for faster startup during development
+def save_tweet_cache(
+    tweets: list,
+    vibes: list | None = None,
+    engagement_stats: Any | None = None,
+    my_handle: str | None = None,
+) -> None:
+    """
+    Save tweets and related data to cache for quick reload.
+
+    Args:
+        tweets: List of FilteredTweet objects
+        vibes: List of TopicVibe objects (optional)
+        engagement_stats: MyEngagementStats object (optional)
+        my_handle: User's Twitter handle (optional)
+    """
+    ensure_config_dir()
+    cache_data = {
+        "tweets": tweets,
+        "vibes": vibes,
+        "engagement_stats": engagement_stats,
+        "my_handle": my_handle,
+        "cached_at": datetime.now().isoformat(),
+    }
+    try:
+        with open(CACHE_FILE, "wb") as f:
+            pickle.dump(cache_data, f)
+    except Exception:
+        pass  # Silently fail - cache is optional
+
+
+def load_tweet_cache() -> dict | None:
+    """
+    Load tweets from cache if available.
+
+    Returns:
+        Dict with keys: tweets, vibes, engagement_stats, my_handle, cached_at
+        Or None if cache doesn't exist or is invalid
+    """
+    if not CACHE_FILE.exists():
+        return None
+
+    try:
+        with open(CACHE_FILE, "rb") as f:
+            cache_data = pickle.load(f)
+
+        # Validate cache has required data
+        if not cache_data.get("tweets"):
+            return None
+
+        return cache_data
+    except Exception:
+        return None
+
+
+def get_cache_age_minutes() -> float | None:
+    """Get age of cache in minutes, or None if no cache."""
+    cache = load_tweet_cache()
+    if not cache:
+        return None
+
+    try:
+        cached_at = datetime.fromisoformat(cache["cached_at"])
+        age = datetime.now() - cached_at
+        return age.total_seconds() / 60
+    except Exception:
+        return None
+
+
+def clear_tweet_cache() -> None:
+    """Delete the tweet cache file."""
+    try:
+        if CACHE_FILE.exists():
+            CACHE_FILE.unlink()
+    except Exception:
+        pass

@@ -1723,6 +1723,7 @@ async def run_mosaic(
     refresh_minutes: int = 5,
     count: int = 20,
     threshold: int = 5,
+    skip_cache: bool = False,
 ):
     """Run the mosaic display with periodic refresh."""
     console = Console()
@@ -1762,10 +1763,24 @@ async def run_mosaic(
 
     # Import digest clustering function
     from xfeed.digest import cluster_tweets
-    from xfeed.session import get_session_db
+    from xfeed.session import get_session_db, load_tweet_cache, save_tweet_cache
 
     # Startup digest threshold (hours since last session to show digest)
     STARTUP_DIGEST_HOURS = 2.0
+
+    # Check for cached tweets to show immediately (unless --fresh flag)
+    if not skip_cache:
+        cached_data = load_tweet_cache()
+        if cached_data and cached_data.get("tweets"):
+            # Show cached content immediately while fresh load happens in background
+            cached_tweets = cached_data["tweets"]
+            cached_vibes = cached_data.get("vibes") or []
+            cached_stats = cached_data.get("engagement_stats")
+            my_handle = cached_data.get("my_handle")
+
+            mosaic.update_tweets(cached_tweets, cached_vibes, cached_stats)
+            mosaic.is_initial_load = False  # Skip loading screen
+            set_terminal_title(f"[cached] {get_insight(cached_vibes, cached_tweets)}")
 
     async def do_refresh(cnt: int, thresh: int):
         """Perform refresh in background."""
@@ -1832,6 +1847,9 @@ async def run_mosaic(
                                 # Update last_seen timestamp
                                 session_db.set_last_seen()
 
+                                # Save to cache for next startup
+                                save_tweet_cache(tweets, vibes, engagement_stats, my_handle)
+
                             mosaic.is_initial_load = False
                             last_refresh = now
                         except Exception as e:
@@ -1862,6 +1880,8 @@ async def run_mosaic(
                                 if new_tweets:
                                     set_terminal_title(get_insight([], new_tweets))
                                     mosaic.error_message = None  # Clear error on success
+                                    # Save to cache for next startup
+                                    save_tweet_cache(new_tweets, [], new_stats, new_handle)
                                 last_refresh = now
                                 refresh_task = None
                                 mosaic.is_refreshing = False
@@ -1887,6 +1907,8 @@ async def run_mosaic(
                             if new_tweets:
                                 set_terminal_title(get_insight(new_vibes, new_tweets))
                                 mosaic.error_message = None  # Clear error on success
+                                # Save to cache for next startup
+                                save_tweet_cache(new_tweets, new_vibes, new_stats, new_handle)
                             last_refresh = now
                         except Exception as e:
                             set_terminal_title(f"Error: {e}")
