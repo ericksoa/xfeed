@@ -34,19 +34,22 @@ Optional system notifications when exceptionally high-relevance content appears 
 
 ## Nice to Have
 
-### 9. Source Diversity Indicator
+### 9. Thread Loading Reliability
+Investigate why some tweets with 🧵 indicator fail to load threads. Either detect actual thread presence on mosaic load, or improve error handling to show why thread isn't loading (deleted, protected, rate limited, etc.).
+
+### 10. Source Diversity Indicator
 Warn if >50% of displayed feed comes from the same 3 accounts. Encourage diverse information diet.
 
-### 10. Sentiment Overlay
+### 11. Sentiment Overlay
 Color-code tiles by sentiment in addition to relevance. Distinguish excited/optimistic (green) from skeptical/critical (orange) from heated/angry (red).
 
-### 11. Time-Series View
+### 12. Time-Series View
 `xfeed trends` showing topic volume over past week. What's heating up? What's cooling down? Requires historical data collection.
 
-### 12. Export Digest
+### 13. Export Digest
 `xfeed digest --since yesterday --format markdown` for sharing curated content. Email digest, blog post draft, or team Slack update.
 
-### 13. Search Within Results
+### 14. Search Within Results
 `/search` command to filter currently displayed tweets by keyword. Find that tweet you saw earlier without re-fetching.
 
 ---
@@ -69,3 +72,4 @@ Color-code tiles by sentiment in addition to relevance. Distinguish excited/opti
 - [x] Thread awareness with [t] key overlay
 - [x] Thread caching with background refresh
 - [x] Arrow key navigation on mosaic (↑↓←→ grid navigation)
+- [x] Error bar display (transient red bar for failures, clears on success)

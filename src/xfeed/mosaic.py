@@ -913,6 +913,8 @@ class MosaicDisplay:
         self.thread_fetch_url: str | None = None  # URL being fetched (for caching)
         # Grid layout for arrow navigation: list of rows, each row is list of shortcut numbers
         self.shortcut_grid: list[list[int]] = []
+        # Error display: shows red bar at bottom when set
+        self.error_message: str | None = None
 
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for tweets with shortcut numbers."""
@@ -1223,6 +1225,12 @@ class MosaicDisplay:
             elements.append(Text())
             elements.append(Align.center(overlay.render()))
 
+        # Error bar at bottom
+        if self.error_message:
+            error_text = self.error_message[:80]
+            elements.append(Text())
+            elements.append(Align.center(Text(f" {error_text} ", style="bold bright_white on dark_red")))
+
         return Group(*elements)
 
     def render_thread_loading(self) -> Group:
@@ -1240,6 +1248,12 @@ class MosaicDisplay:
         elements.append(Align.center(loading))
         elements.append(Text())
         elements.append(Align.center(Text("[Esc] cancel", style="dim")))
+
+        # Error bar at bottom
+        if self.error_message:
+            error_text = self.error_message[:80]
+            elements.append(Text())
+            elements.append(Align.center(Text(f" {error_text} ", style="bold bright_white on dark_red")))
 
         return Group(*elements)
 
@@ -1406,6 +1420,12 @@ class MosaicDisplay:
         elements.append(Align.center(self.render_legend()))
         elements.append(Align.center(Text("[←↑↓→/1-9] select  [o]pen  [t]hread  [+/-] threshold  [c]ount  obj[e]ctives  [r]efresh  [q]uit", style="dim")))
 
+        # Error bar at bottom (only if there's an error)
+        if self.error_message:
+            error_text = self.error_message[:80]  # Truncate to 80 chars
+            elements.append(Text())
+            elements.append(Align.center(Text(f" {error_text} ", style="bold bright_white on dark_red")))
+
         return Group(*elements)
 
     def update_tweets(
@@ -1567,10 +1587,12 @@ async def run_mosaic(
                             if tweets:
                                 mosaic.update_tweets(tweets, vibes, engagement_stats)
                                 set_terminal_title(get_insight(vibes, tweets))
+                                mosaic.error_message = None  # Clear any error on success
                             mosaic.is_initial_load = False
                             last_refresh = now
                         except Exception as e:
                             set_terminal_title(f"Error: {e}")
+                            mosaic.error_message = f"Initial load failed: {str(e)[:60]}"
                             mosaic.is_initial_load = False
                         initial_load_task = None
 
@@ -1595,12 +1617,14 @@ async def run_mosaic(
                                 mosaic.update_tweets(new_tweets, [], new_stats)
                                 if new_tweets:
                                     set_terminal_title(get_insight([], new_tweets))
+                                    mosaic.error_message = None  # Clear error on success
                                 last_refresh = now
                                 refresh_task = None
                                 mosaic.is_refreshing = False
                                 mosaic.refresh_phase = ""
                         except Exception as e:
                             set_terminal_title(f"Error: {e}")
+                            mosaic.error_message = f"Refresh failed: {str(e)[:65]}"
                             refresh_task = None
                             mosaic.is_refreshing = False
                             mosaic.refresh_phase = ""
@@ -1618,9 +1642,11 @@ async def run_mosaic(
                             mosaic.update_tweets(new_tweets, new_vibes, new_stats)
                             if new_tweets:
                                 set_terminal_title(get_insight(new_vibes, new_tweets))
+                                mosaic.error_message = None  # Clear error on success
                             last_refresh = now
                         except Exception as e:
                             set_terminal_title(f"Error: {e}")
+                            mosaic.error_message = f"Vibe extraction failed: {str(e)[:55]}"
                         vibe_task = None
                         vibe_task_data = None
                         refresh_task = None
@@ -1643,16 +1669,21 @@ async def run_mosaic(
                                     mosaic.thread_context = thread_context
                                     mosaic.thread_overlay_visible = True
                                     mosaic.thread_selected_index = -1
+                                    mosaic.error_message = None  # Clear error on success
                             else:
                                 # Thread fetch returned None - pop stack if we were diving
-                                if not mosaic.thread_background_refresh and mosaic.thread_stack:
+                                if not mosaic.thread_background_refresh:
+                                    mosaic.error_message = "Thread load failed: no data returned"
+                                    if mosaic.thread_stack:
+                                        mosaic.thread_context = mosaic.thread_stack.pop()
+                                        mosaic.thread_overlay_visible = True
+                        except Exception as e:
+                            # Thread fetch failed - set error and pop stack if we were diving
+                            if not mosaic.thread_background_refresh:
+                                mosaic.error_message = f"Thread load failed: {str(e)[:55]}"
+                                if mosaic.thread_stack:
                                     mosaic.thread_context = mosaic.thread_stack.pop()
                                     mosaic.thread_overlay_visible = True
-                        except Exception:
-                            # Thread fetch failed - pop stack if we were diving
-                            if not mosaic.thread_background_refresh and mosaic.thread_stack:
-                                mosaic.thread_context = mosaic.thread_stack.pop()
-                                mosaic.thread_overlay_visible = True
                         thread_task = None
                         mosaic.thread_loading = False
                         mosaic.thread_background_refresh = False
