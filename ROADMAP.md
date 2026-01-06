@@ -6,50 +6,47 @@ A curated list of improvements to make xfeed the best X client for cutting throu
 
 ## High Impact
 
-### 1. Thread Awareness
-Detect when a high-score tweet is part of a thread. Offer to load full context with `[t]hread` key. Many valuable insights are buried in threads, not standalone tweets.
-
-### 2. "While You Were Away" Digest
+### 1. "While You Were Away" Digest
 Summarize what happened since last check. Cluster by topic, show top 3 tweets per topic. Perfect for catching up after being offline.
 
-### 3. Link Expansion
+### 2. Link Expansion
 Fetch and summarize linked articles inline using Claude. "This tweet links to: [2-sentence summary]". No more clicking through to understand context.
 
-### 4. Deduplication
+### 3. Deduplication
 Collapse duplicate content: same link shared by multiple people, quote tweets of the same original, rephrased versions of the same news. Show "5 people shared this" instead of 5 tiles.
 
 ## Medium Impact
 
-### 5. Bookmarks / Save
+### 4. Bookmarks / Save
 Press `[s]` to save tweet to local SQLite database. `xfeed saved` command to review later. Export to markdown for sharing or archival.
 
-### 6. Quick Actions
+### 5. Quick Actions
 `[l]ike`, `[R]etweet` directly from mosaic. Requires write access via browser session. Powerful for engagement workflow.
 
-### 7. Multiple Objective Profiles
+### 6. Multiple Objective Profiles
 `xfeed mosaic --profile work` vs `--profile learning`. Different objectives files for different contexts. Switch profiles with `[p]` key while running.
 
-### 8. Conversation Loader
+### 7. Conversation Loader
 Press `[T]` to load replies and conversation for a selected tweet. See the discussion without leaving the terminal.
 
-### 9. Desktop Notifications
+### 8. Desktop Notifications
 Optional system notifications when exceptionally high-relevance content appears (score 9+). Ambient awareness without constant watching.
 
 ## Nice to Have
 
-### 10. Source Diversity Indicator
+### 9. Source Diversity Indicator
 Warn if >50% of displayed feed comes from the same 3 accounts. Encourage diverse information diet.
 
-### 11. Sentiment Overlay
+### 10. Sentiment Overlay
 Color-code tiles by sentiment in addition to relevance. Distinguish excited/optimistic (green) from skeptical/critical (orange) from heated/angry (red).
 
-### 12. Time-Series View
+### 11. Time-Series View
 `xfeed trends` showing topic volume over past week. What's heating up? What's cooling down? Requires historical data collection.
 
-### 13. Export Digest
+### 12. Export Digest
 `xfeed digest --since yesterday --format markdown` for sharing curated content. Email digest, blog post draft, or team Slack update.
 
-### 14. Search Within Results
+### 13. Search Within Results
 `/search` command to filter currently displayed tweets by keyword. Find that tweet you saw earlier without re-fetching.
 
 ---
@@ -69,3 +66,4 @@ Color-code tiles by sentiment in addition to relevance. Distinguish excited/opti
 - [x] Contrarian-but-serious allowance (rigorous dissent)
 - [x] Author reputation tracking with SQLite persistence
 - [x] Trusted/rising author badges in mosaic
+- [x] Thread awareness with [t] key overlay
