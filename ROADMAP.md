@@ -67,3 +67,11 @@ Color-code tiles by sentiment in addition to relevance. Distinguish excited/opti
 - [x] Author reputation tracking with SQLite persistence
 - [x] Trusted/rising author badges in mosaic
 - [x] Thread awareness with [t] key overlay
+- [x] Thread caching with background refresh
+
+---
+
+## Up Next
+
+### Arrow Key Navigation on Mosaic
+Use ↑↓ to move selection between tweets on the main mosaic view, similar to thread overlay navigation. More consistent and keyboard-friendly UX.
