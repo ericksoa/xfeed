@@ -69,6 +69,15 @@ class Tweet:
 
 
 @dataclass
+class LinkSummary:
+    """Summary of a linked article."""
+
+    url: str
+    title: str
+    summary: str  # 2-sentence summary
+
+
+@dataclass
 class FilteredTweet:
     """A tweet with relevance scoring from the LLM filter."""
 
@@ -76,6 +85,7 @@ class FilteredTweet:
     relevance_score: int  # 0-10
     reason: str  # Why it's relevant
     is_superdunk: bool = False  # Quote tweet with educational correction/insight
+    link_summaries: list[LinkSummary] = field(default_factory=list)  # Expanded links
 
 
 @dataclass

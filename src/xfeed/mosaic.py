@@ -18,7 +18,7 @@ from rich.table import Table
 from rich.align import Align
 from rich import box
 
-from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats, Notification, NotificationType, ThreadContext, Tweet, Digest, DigestTopic
+from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats, Notification, NotificationType, ThreadContext, Tweet, Digest, DigestTopic, LinkSummary
 
 
 class KeyboardListener:
@@ -262,6 +262,16 @@ class MosaicTile:
         else:
             self.pages = split_into_pages(tweet.tweet.content, content_width, content_lines)
 
+        # Add link summary pages (marked specially for rendering)
+        self.link_page_indices: set[int] = set()
+        if tweet.link_summaries:
+            for link_sum in tweet.link_summaries[:2]:  # Max 2 links
+                link_text = f"🔗 {link_sum.summary}"
+                link_pages = split_into_pages(link_text, content_width, content_lines)
+                for _ in link_pages:
+                    self.link_page_indices.add(len(self.pages))
+                self.pages.extend(link_pages)
+
         self.total_pages = len(self.pages)
 
     def get_current_page(self, time_now: float) -> int:
@@ -297,12 +307,18 @@ class MosaicTile:
 
         current_page = self.get_current_page(time_now)
         page_lines = self.pages[current_page] if current_page < len(self.pages) else []
+        is_link_page = current_page in self.link_page_indices
 
         page_indicator = ""
         if self.total_pages > 1:
-            page_indicator = f" [{current_page + 1}/{self.total_pages}]"
+            if is_link_page:
+                page_indicator = f" [🔗]"
+            else:
+                page_indicator = f" [{current_page + 1}/{self.total_pages}]"
 
         content_width = self.width - 4
+        # Style for link pages vs regular content
+        content_style = "italic bright_blue" if is_link_page else "white"
 
         if self.height >= 5:
             available_content = max(1, self.height - 2)
@@ -334,7 +350,7 @@ class MosaicTile:
             lines.append(header)
 
             for line in page_lines[:available_content]:
-                lines.append(Text(line, style="white"))
+                lines.append(Text(line, style=content_style))
 
             while len(lines) < available_content + 1:
                 lines.append(Text(""))
@@ -377,7 +393,7 @@ class MosaicTile:
             lines.append(header)
 
             for line in page_lines[:available_content]:
-                lines.append(Text(line, style="white"))
+                lines.append(Text(line, style=content_style))
 
             while len(lines) < self.height:
                 lines.append(Text(""))
@@ -410,7 +426,9 @@ class MosaicTile:
 
             lines = [header]
             for line in page_lines[:available_content]:
-                lines.append(Text(line, style="dim"))
+                # Use link style if showing link, otherwise dim for smaller tiles
+                style = "italic bright_blue" if is_link_page else "dim"
+                lines.append(Text(line, style=style))
 
             body = Text("\n").join(lines)
 
@@ -1765,8 +1783,15 @@ async def run_mosaic(
     from xfeed.digest import cluster_tweets
     from xfeed.session import get_session_db, load_tweet_cache, save_tweet_cache
 
+    # Import link expansion
+    from xfeed.links import get_tweet_urls, expand_links_batch
+
     # Startup digest threshold (hours since last session to show digest)
     STARTUP_DIGEST_HOURS = 2.0
+
+    # Link expansion task state
+    link_task: asyncio.Task | None = None
+    link_task_tweets: list[FilteredTweet] | None = None  # Tweets being expanded
 
     # Check for cached tweets to show immediately (unless --fresh flag)
     if not skip_cache:
@@ -1850,6 +1875,16 @@ async def run_mosaic(
                                 # Save to cache for next startup
                                 save_tweet_cache(tweets, vibes, engagement_stats, my_handle)
 
+                                # Start link expansion in background
+                                if link_task is None and tweets:
+                                    link_task_tweets = tweets
+                                    all_urls = []
+                                    for ft in tweets:
+                                        urls = get_tweet_urls(ft.tweet.content)
+                                        all_urls.extend(urls)
+                                    if all_urls:
+                                        link_task = asyncio.create_task(expand_links_batch(all_urls))
+
                             mosaic.is_initial_load = False
                             last_refresh = now
                         except Exception as e:
@@ -1857,6 +1892,29 @@ async def run_mosaic(
                             mosaic.error_message = f"Initial load failed: {str(e)[:60]}"
                             mosaic.is_initial_load = False
                         initial_load_task = None
+
+                    # Check if link expansion completed
+                    if link_task is not None and link_task.done():
+                        try:
+                            expanded = link_task.result()
+                            if expanded and link_task_tweets:
+                                # Update tweets with link summaries
+                                for ft in link_task_tweets:
+                                    urls = get_tweet_urls(ft.tweet.content)
+                                    summaries = []
+                                    for url in urls:
+                                        if url in expanded:
+                                            data = expanded[url]
+                                            summaries.append(LinkSummary(
+                                                url=url,
+                                                title=data["title"],
+                                                summary=data["summary"],
+                                            ))
+                                    ft.link_summaries = summaries
+                        except Exception:
+                            pass  # Silently ignore link expansion errors
+                        link_task = None
+                        link_task_tweets = None
 
                     # Check if background refresh completed (but vibe extraction still pending)
                     if refresh_task is not None and refresh_task.done() and vibe_task is None:
@@ -1909,6 +1967,17 @@ async def run_mosaic(
                                 mosaic.error_message = None  # Clear error on success
                                 # Save to cache for next startup
                                 save_tweet_cache(new_tweets, new_vibes, new_stats, new_handle)
+
+                                # Start link expansion in background
+                                if link_task is None:
+                                    link_task_tweets = new_tweets
+                                    all_urls = []
+                                    for ft in new_tweets:
+                                        urls = get_tweet_urls(ft.tweet.content)
+                                        all_urls.extend(urls)
+                                    if all_urls:
+                                        link_task = asyncio.create_task(expand_links_batch(all_urls))
+
                             last_refresh = now
                         except Exception as e:
                             set_terminal_title(f"Error: {e}")
@@ -2205,6 +2274,11 @@ async def run_mosaic(
         if digest_task is not None:
             try:
                 digest_task.cancel()
+            except Exception:
+                pass
+        if link_task is not None:
+            try:
+                link_task.cancel()
             except Exception:
                 pass
         keyboard.stop()
