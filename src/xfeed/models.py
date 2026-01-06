@@ -44,6 +44,13 @@ class Tweet:
     is_by_me: bool = False  # True if I authored this tweet
     is_liked_by_me: bool = False  # True if I liked this tweet
     is_retweeted_by_me: bool = False  # True if I retweeted this tweet
+    # Thread context
+    is_reply: bool = False  # True if this tweet is a reply to another
+
+    @property
+    def has_thread_context(self) -> bool:
+        """True if pressing [t] would show useful thread context."""
+        return self.is_reply or self.replies > 0
 
     @property
     def formatted_time(self) -> str:

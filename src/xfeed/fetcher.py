@@ -353,6 +353,16 @@ async def extract_tweet_data(article, page: Page, my_handle: str | None = None) 
             aria_label = await retweet_button.get_attribute("aria-label") or ""
             is_retweeted_by_me = "undo" in aria_label.lower()
 
+        # Check if this tweet is a reply
+        # X shows "Replying to @handle" above reply tweets
+        is_reply = False
+        try:
+            # Look for "Replying to" text in the tweet article
+            full_text = await article.inner_text()
+            is_reply = "replying to" in full_text.lower()
+        except Exception:
+            pass
+
         return Tweet(
             id=tweet_id,
             author=author,
@@ -368,6 +378,7 @@ async def extract_tweet_data(article, page: Page, my_handle: str | None = None) 
             is_by_me=is_by_me,
             is_liked_by_me=is_liked_by_me,
             is_retweeted_by_me=is_retweeted_by_me,
+            is_reply=is_reply,
         )
     except Exception:
         return None

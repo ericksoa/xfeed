@@ -69,6 +69,7 @@ class KeyboardListener:
     def _listen(self):
         """Background thread that reads keypresses using select for non-blocking."""
         import select
+
         while self._running:
             try:
                 # Use select with timeout so we can check _running periodically
@@ -76,7 +77,24 @@ class KeyboardListener:
                 if readable and self._running:
                     ch = sys.stdin.read(1)
                     if ch:
-                        self.queue.put(ch)
+                        # Arrow keys send escape sequences: \x1b[A, \x1b[B, etc.
+                        # When we see \x1b, immediately read 2 more bytes
+                        if ch == '\x1b':
+                            # Read next 2 bytes to complete escape sequence
+                            rest = sys.stdin.read(2)
+                            if rest == '[A':
+                                self.queue.put('KEY_UP')
+                            elif rest == '[B':
+                                self.queue.put('KEY_DOWN')
+                            elif rest == '[C':
+                                self.queue.put('KEY_RIGHT')
+                            elif rest == '[D':
+                                self.queue.put('KEY_LEFT')
+                            else:
+                                # Unknown sequence or standalone escape
+                                self.queue.put('KEY_ESCAPE')
+                        else:
+                            self.queue.put(ch)
             except Exception:
                 if not self._running:
                     break  # Expected during shutdown
@@ -97,6 +115,35 @@ class KeyboardListener:
             except Empty:
                 break
         return keys
+
+    def get_key_with_escape_sequence(self, timeout: float = 0.15) -> str | None:
+        """
+        Get a keypress, handling escape sequences for arrow keys.
+
+        Returns:
+            - 'up', 'down', 'left', 'right' for arrow keys
+            - 'escape' for standalone escape
+            - The character for other keys
+            - None if no key available
+        """
+        try:
+            key = self.queue.get_nowait()
+        except Empty:
+            return None
+
+        # Map pre-processed keys from _listen() to expected names
+        if key == 'KEY_UP':
+            return 'up'
+        elif key == 'KEY_DOWN':
+            return 'down'
+        elif key == 'KEY_LEFT':
+            return 'left'
+        elif key == 'KEY_RIGHT':
+            return 'right'
+        elif key == 'KEY_ESCAPE':
+            return 'escape'
+
+        return key
 
 
 def normalize_emoji(emoji: str) -> tuple[str, int]:
@@ -185,7 +232,7 @@ class MosaicTile:
 
     PAGE_DURATION = 3.0
 
-    def __init__(self, tweet: FilteredTweet, width: int, tile_id: int = 0, shortcut_num: int | None = None):
+    def __init__(self, tweet: FilteredTweet, width: int, tile_id: int = 0, shortcut_num: int | None = None, is_selected: bool = False):
         self.tweet = tweet
         self.width = width
         self.score = tweet.relevance_score
@@ -193,10 +240,14 @@ class MosaicTile:
         self.height = get_tile_height(self.score)
         self.tile_id = tile_id
         self.shortcut_num = shortcut_num  # 1-9 for keyboard shortcut, None if no shortcut
+        self.is_selected = is_selected  # True if currently selected by user
 
         # Reputation badges (parsed from reason string)
         self.is_trusted = "[rep+" in tweet.reason
         self.is_rising = tweet.reason.startswith("[RISING]")
+
+        # Thread context indicator
+        self.has_thread_context = tweet.tweet.has_thread_context
 
         content_width = self.width - 6
         content_lines = max(1, self.height - 2)
@@ -224,7 +275,11 @@ class MosaicTile:
         t = self.tweet.tweet
         block, fg, bg = get_block_style(self.score)
 
-        if self.is_superdunk:
+        # Selection overrides normal border style
+        if self.is_selected:
+            border_style = "bold bright_white on blue"
+            box_type = box.HEAVY
+        elif self.is_superdunk:
             border_style = "bold bright_green"
             box_type = box.DOUBLE
         elif self.score >= 9:
@@ -255,6 +310,8 @@ class MosaicTile:
             header = Text()
             if self.shortcut_num:
                 header.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
+            if self.has_thread_context:
+                header.append("🧵 ", style="cyan")
             if self.is_superdunk:
                 header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
@@ -297,6 +354,8 @@ class MosaicTile:
             header = Text()
             if self.shortcut_num:
                 header.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
+            if self.has_thread_context:
+                header.append("🧵 ", style="cyan")
             if self.is_superdunk:
                 header.append("🎯 ", style="bold")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
@@ -330,6 +389,8 @@ class MosaicTile:
             header = Text()
             if self.shortcut_num:
                 header.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
+            if self.has_thread_context:
+                header.append("🧵 ", style="cyan")
             header.append(f"[{self.score}] ", style=f"bold {fg}")
             header.append(truncate(t.author_handle, 10), style="cyan")
             # Reputation badges (compact)
@@ -357,6 +418,8 @@ class MosaicTile:
             body = Text()
             if self.shortcut_num:
                 body.append(f"⌘{self.shortcut_num} ", style="bold black on bright_yellow")
+            if self.has_thread_context:
+                body.append("🧵 ", style="cyan")
             body.append(f"[{self.score}] ", style=f"{fg}")
             body.append(truncate(t.author_handle, content_width - 12), style="dim cyan")
             # Reputation badges (minimal)
@@ -661,27 +724,41 @@ def compute_engagement_stats(
 class ThreadOverlay:
     """Overlay panel showing thread context for a selected tweet."""
 
-    def __init__(self, context: ThreadContext, width: int, height: int):
+    def __init__(self, context: ThreadContext, width: int, height: int, selected_index: int = -1, stack_depth: int = 0):
         self.context = context
         self.width = width
         self.height = height
         self.scroll_offset = 0
+        self.selected_index = selected_index  # -1 = original tweet, 0+ = reply index
+        self.stack_depth = stack_depth  # How deep in the navigation stack
 
-    def _render_thread_tweet(self, tweet: Tweet, highlight: bool = False) -> Text:
+    def _render_thread_tweet(self, tweet: Tweet, is_original: bool = False, is_selected: bool = False, index: int | None = None) -> Text:
         """Render a single tweet in thread format."""
         line = Text()
 
-        if highlight:
+        # Prefix shows selection state
+        if is_original and not is_selected:
             line.append(">>> ", style="bold bright_yellow")
+        elif is_selected:
+            line.append(" >> ", style="bold bright_white on blue")
         else:
             line.append("    ", style="dim")
 
-        line.append(f"{tweet.author_handle}", style="cyan")
+        # Show index number for replies that can be selected
+        if index is not None:
+            line.append(f"[{index + 1}] ", style="dim magenta")
+
+        line.append(f"{tweet.author_handle}", style="cyan" if not is_selected else "bold cyan")
         line.append(f" ({tweet.formatted_time})", style="dim")
+
+        # Show thread indicator if this tweet has thread context
+        if tweet.has_thread_context:
+            line.append(" 🧵", style="cyan")
+
         line.append("\n")
 
         # Indent content
-        prefix = "    " if not highlight else "    "
+        prefix = "    "
         content = tweet.content.replace("\n", " ")
         if len(content) > 300:
             content = content[:297] + "..."
@@ -690,14 +767,15 @@ class ThreadOverlay:
         content_width = self.width - 10
         words = content.split()
         current_line = prefix
+        content_style = "white" if (is_original or is_selected) else "dim"
         for word in words:
             if len(current_line) + len(word) + 1 > content_width:
-                line.append(current_line + "\n", style="white" if highlight else "dim")
+                line.append(current_line + "\n", style=content_style)
                 current_line = prefix + word + " "
             else:
                 current_line += word + " "
         if current_line.strip():
-            line.append(current_line.rstrip(), style="white" if highlight else "dim")
+            line.append(current_line.rstrip(), style=content_style)
 
         return line
 
@@ -705,17 +783,19 @@ class ThreadOverlay:
         """Render the thread overlay as a panel."""
         lines: list[Text] = []
 
-        # Header
+        # Header with navigation hint
         header = Text()
         header.append("THREAD CONTEXT", style="bold bright_cyan")
         header.append(f"  ({self.context.total_count} tweets)", style="dim")
+        if self.stack_depth > 0:
+            header.append(f"  [depth: {self.stack_depth + 1}]", style="dim magenta")
         lines.append(header)
         lines.append(Text())
 
-        # Parent tweets (context above)
+        # Parent tweets (context above) - not selectable
         if self.context.parent_tweets:
             for tweet in self.context.parent_tweets:
-                lines.append(self._render_thread_tweet(tweet, highlight=False))
+                lines.append(self._render_thread_tweet(tweet, is_original=False, is_selected=False))
                 lines.append(Text())
 
             # Separator
@@ -723,27 +803,49 @@ class ThreadOverlay:
             lines.append(sep)
             lines.append(Text())
 
-        # Main tweet (highlighted)
-        lines.append(self._render_thread_tweet(self.context.original_tweet, highlight=True))
+        # Main tweet (highlighted when selected_index == -1)
+        is_original_selected = self.selected_index == -1
+        lines.append(self._render_thread_tweet(
+            self.context.original_tweet,
+            is_original=True,
+            is_selected=is_original_selected
+        ))
         lines.append(Text())
 
-        # Replies below
+        # Replies below - selectable
         if self.context.reply_tweets:
             # Separator
             sep = Text("─" * (self.width - 8), style="dim cyan")
             lines.append(sep)
             lines.append(Text())
 
-            for tweet in self.context.reply_tweets:
-                lines.append(self._render_thread_tweet(tweet, highlight=False))
+            for i, tweet in enumerate(self.context.reply_tweets):
+                is_reply_selected = self.selected_index == i
+                lines.append(self._render_thread_tweet(
+                    tweet,
+                    is_original=False,
+                    is_selected=is_reply_selected,
+                    index=i
+                ))
                 lines.append(Text())
 
         body = Text("\n").join(lines)
 
+        # Build subtitle with navigation hints
+        subtitle_parts = []
+        if self.stack_depth > 0:
+            subtitle_parts.append("[Esc] back")
+        else:
+            subtitle_parts.append("[Esc] close")
+        subtitle_parts.append("[↑↓] select")
+        if self.context.reply_tweets:
+            subtitle_parts.append("[Enter] dive in")
+        subtitle = "  ".join(subtitle_parts)
+
         return Panel(
             body,
             title="[bold cyan]Thread View[/bold cyan]",
-            subtitle="[dim][Esc] close[/dim]",
+            subtitle=f"[dim]{subtitle}[/dim]",
             box=box.DOUBLE,
             border_style="bright_cyan",
             width=self.width,
@@ -795,7 +897,11 @@ class MosaicDisplay:
         self.thread_overlay_visible: bool = False
         self.thread_context: ThreadContext | None = None
         self.thread_loading: bool = False
-        self.selected_tweet_num: int | None = None
+        self.selected_tweet_num: int | None = None  # Currently selected tweet (1-9)
+        self.selected_shortcut: int | None = None  # For visual highlight
+        # Thread navigation state
+        self.thread_stack: list[ThreadContext] = []  # Stack for back navigation
+        self.thread_selected_index: int = -1  # -1 = original tweet, 0+ = reply index
 
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for tweets with shortcut numbers."""
@@ -829,7 +935,8 @@ class MosaicDisplay:
                 tile_width = min(width - 4, 40)
 
             shortcut = shortcut_map.get(id(tweet))
-            tiles.append(MosaicTile(tweet, tile_width, tile_id=i, shortcut_num=shortcut))
+            is_selected = shortcut is not None and shortcut == self.selected_shortcut
+            tiles.append(MosaicTile(tweet, tile_width, tile_id=i, shortcut_num=shortcut, is_selected=is_selected))
 
         return tiles
 
@@ -922,6 +1029,7 @@ class MosaicDisplay:
         legend.append("│ ", style="dim")
         legend.append("★ trusted ", style="gold1")
         legend.append("↑ rising ", style="bright_green")
+        legend.append("🧵 thread ", style="cyan")
         legend.append("│ ", style="dim")
         legend.append("🎯 superdunk", style="bright_green")
         return legend
@@ -939,6 +1047,8 @@ class MosaicDisplay:
                 self.thread_context,
                 width=overlay_width,
                 height=30,
+                selected_index=self.thread_selected_index,
+                stack_depth=len(self.thread_stack),
             )
             elements.append(Text())
             elements.append(Align.center(overlay.render()))
@@ -1124,7 +1234,7 @@ class MosaicDisplay:
 
         elements.append(Text())
         elements.append(Align.center(self.render_legend()))
-        elements.append(Align.center(Text("[1-9] open  [t] thread  [+/-] threshold  [c]ount  [o]bjectives  [r]efresh  [q]uit", style="dim")))
+        elements.append(Align.center(Text("[1-9] select  [o]pen  [t]hread  [+/-] threshold  [c]ount  obj[e]ctives  [r]efresh  [q]uit", style="dim")))
 
         return Group(*elements)
 
@@ -1351,27 +1461,70 @@ async def run_mosaic(
                             if thread_context:
                                 mosaic.thread_context = thread_context
                                 mosaic.thread_overlay_visible = True
+                                mosaic.thread_selected_index = -1  # Reset selection
+                            else:
+                                # Thread fetch returned None - pop stack if we were diving
+                                if mosaic.thread_stack:
+                                    mosaic.thread_context = mosaic.thread_stack.pop()
+                                    mosaic.thread_overlay_visible = True
                         except Exception:
-                            pass  # Thread fetch failed silently
+                            # Thread fetch failed - pop stack if we were diving
+                            if mosaic.thread_stack:
+                                mosaic.thread_context = mosaic.thread_stack.pop()
+                                mosaic.thread_overlay_visible = True
                         thread_task = None
                         mosaic.thread_loading = False
 
-                    # Handle keyboard input - process all queued keys
-                    keys = keyboard.drain_keys()
+                    # Handle keyboard input - process keys with proper escape sequence handling
                     should_quit = False
                     should_refresh = False
 
-                    for key in keys:
-                        # Handle overlay mode differently
+                    # Process all available keys
+                    while True:
+                        key = keyboard.get_key_with_escape_sequence()
+                        if key is None:
+                            break
+
+                        # Handle overlay mode with full navigation
                         if mosaic.thread_overlay_visible:
-                            if key == '\x1b' or key == 'q':  # Escape or q closes overlay
-                                mosaic.thread_overlay_visible = False
-                                mosaic.thread_context = None
+                            if key == 'up':
+                                # Move selection up
+                                if mosaic.thread_selected_index > -1:
+                                    mosaic.thread_selected_index -= 1
+                            elif key == 'down':
+                                # Move selection down
+                                max_index = len(mosaic.thread_context.reply_tweets) - 1 if mosaic.thread_context else -1
+                                if mosaic.thread_selected_index < max_index:
+                                    mosaic.thread_selected_index += 1
+                            elif key == '\r' or key == '\n' or key == 'right':
+                                # Enter/Right: dive into selected tweet's thread
+                                if mosaic.thread_context and mosaic.thread_selected_index >= 0:
+                                    selected_reply = mosaic.thread_context.reply_tweets[mosaic.thread_selected_index]
+                                    if selected_reply.has_thread_context and thread_task is None:
+                                        # Push current context onto stack
+                                        mosaic.thread_stack.append(mosaic.thread_context)
+                                        # Load the subthread
+                                        from xfeed.fetcher import fetch_thread
+                                        mosaic.thread_loading = True
+                                        mosaic.thread_overlay_visible = False
+                                        thread_task = asyncio.create_task(fetch_thread(selected_reply.url))
+                            elif key == 'escape' or key == 'left':
+                                # Escape or Left: go back or close
+                                if mosaic.thread_stack:
+                                    # Pop back to previous thread
+                                    mosaic.thread_context = mosaic.thread_stack.pop()
+                                    mosaic.thread_selected_index = -1
+                                else:
+                                    # Close overlay entirely
+                                    mosaic.thread_overlay_visible = False
+                                    mosaic.thread_context = None
+                                    mosaic.thread_selected_index = -1
+                                    mosaic.thread_stack = []
                             continue  # Don't process other keys when overlay visible
 
                         # Handle thread loading cancellation
                         if mosaic.thread_loading:
-                            if key == '\x1b' or key == 'q':  # Cancel loading
+                            if key == 'escape' or key == 'q':  # Cancel loading
                                 if thread_task and not thread_task.done():
                                     thread_task.cancel()
                                 mosaic.thread_loading = False
@@ -1385,11 +1538,17 @@ async def run_mosaic(
                         elif key == 'r':
                             should_refresh = True
                         elif key and key.isdigit() and key != '0':
+                            # Select tweet (visual highlight) - don't open yet
                             num = int(key)
-                            mosaic.selected_tweet_num = num  # Track selection
-                            url = mosaic.get_url_for_shortcut(num)
-                            if url:
-                                webbrowser.open(url)
+                            if mosaic.get_url_for_shortcut(num):
+                                mosaic.selected_tweet_num = num
+                                mosaic.selected_shortcut = num
+                        elif key == 'o':
+                            # Open selected tweet in browser
+                            if mosaic.selected_tweet_num:
+                                url = mosaic.get_url_for_shortcut(mosaic.selected_tweet_num)
+                                if url:
+                                    webbrowser.open(url)
                         elif key == 't':
                             # Load thread for selected tweet
                             if mosaic.selected_tweet_num and thread_task is None:
@@ -1397,6 +1556,8 @@ async def run_mosaic(
                                 if url:
                                     from xfeed.fetcher import fetch_thread
                                     mosaic.thread_loading = True
+                                    mosaic.thread_stack = []  # Clear stack for fresh thread
+                                    mosaic.thread_selected_index = -1
                                     thread_task = asyncio.create_task(fetch_thread(url))
                         elif key == '+' or key == '=':
                             if mosaic.threshold < 10:
@@ -1408,7 +1569,7 @@ async def run_mosaic(
                                 mosaic.refilter_tweets()
                         elif key == 'c':
                             mosaic.cycle_count()
-                        elif key == 'o':
+                        elif key == 'e':
                             open_objectives_in_editor(keyboard, live)
 
                     if should_quit:
