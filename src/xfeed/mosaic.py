@@ -1795,6 +1795,8 @@ async def run_mosaic(
     link_task_tweets: list[FilteredTweet] | None = None  # Tweets being expanded
 
     # Check for cached tweets to show immediately (unless --fresh flag)
+    # Also track cached tweets for link expansion
+    cached_tweets_for_links: list | None = None
     if not skip_cache:
         cached_data = load_tweet_cache()
         if cached_data and cached_data.get("tweets"):
@@ -1807,6 +1809,9 @@ async def run_mosaic(
             mosaic.update_tweets(cached_tweets, cached_vibes, cached_stats)
             mosaic.is_initial_load = False  # Skip loading screen
             set_terminal_title(f"[cached] {get_insight(cached_vibes, cached_tweets)}")
+
+            # Mark cached tweets for link expansion
+            cached_tweets_for_links = cached_tweets
 
     async def do_refresh(cnt: int, thresh: int):
         """Perform refresh in background."""
@@ -1848,6 +1853,17 @@ async def run_mosaic(
             try:
                 while True:
                     now = time.time()
+
+                    # Start link expansion for cached tweets (once, on first loop iteration)
+                    if cached_tweets_for_links is not None and link_task is None:
+                        link_task_tweets = cached_tweets_for_links
+                        all_urls = []
+                        for ft in cached_tweets_for_links:
+                            urls = get_tweet_urls(ft.tweet.content)
+                            all_urls.extend(urls)
+                        if all_urls:
+                            link_task = asyncio.create_task(expand_links_batch(all_urls))
+                        cached_tweets_for_links = None  # Only do this once
 
                     # Check if initial load completed
                     if initial_load_task is not None and initial_load_task.done():
