@@ -469,6 +469,39 @@ async def fetch_timeline(
     return list(tweets.values())[:count], my_handle
 
 
+async def fetch_since(
+    since: datetime,
+    max_count: int = 100,
+    headless: bool = True,
+    on_progress: callable = None,
+) -> tuple[list[Tweet], str | None]:
+    """
+    Fetch tweets from timeline that are newer than `since` timestamp.
+
+    Uses existing fetch_timeline with post-filtering by timestamp.
+    Fetches up to max_count tweets and returns only those newer than since.
+
+    Args:
+        since: Only return tweets newer than this timestamp
+        max_count: Maximum tweets to fetch from timeline
+        headless: Run browser in headless mode
+        on_progress: Callback function for progress updates
+
+    Returns:
+        Tuple of (List of tweets newer than since, logged-in user handle)
+    """
+    tweets, my_handle = await fetch_timeline(
+        count=max_count,
+        headless=headless,
+        on_progress=on_progress,
+    )
+
+    # Filter to only tweets newer than since
+    filtered = [t for t in tweets if t.timestamp > since]
+
+    return filtered, my_handle
+
+
 def parse_notification_text(text: str) -> tuple[NotificationType, list[str], int]:
     """
     Parse notification text to extract type and actors.

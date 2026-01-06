@@ -169,3 +169,35 @@ class MyEngagementStats:
     # Top engagers
     top_likers: list = field(default_factory=list)  # list[tuple[str, int]]
     top_retweeters: list = field(default_factory=list)  # list[tuple[str, int]]
+
+
+@dataclass
+class DigestTopic:
+    """A topic cluster in the digest."""
+
+    name: str  # e.g., "AI Safety Developments"
+    emoji: str  # e.g., "🤖"
+    summary: str  # 1-sentence summary
+    tweet_ids: list[str] = field(default_factory=list)  # IDs of tweets in this topic
+
+
+@dataclass
+class Digest:
+    """A clustered summary of tweets since last session."""
+
+    topics: list[DigestTopic]
+    total_tweets: int
+    time_window_hours: float
+    generated_at: datetime = field(default_factory=datetime.now)
+
+    @property
+    def time_window_str(self) -> str:
+        """Human-readable time window."""
+        hours = self.time_window_hours
+        if hours < 1:
+            return f"{int(hours * 60)} minutes"
+        elif hours < 24:
+            return f"{hours:.0f} hours"
+        else:
+            days = hours / 24
+            return f"{days:.1f} days"

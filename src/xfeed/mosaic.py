@@ -18,7 +18,7 @@ from rich.table import Table
 from rich.align import Align
 from rich import box
 
-from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats, Notification, NotificationType, ThreadContext, Tweet
+from xfeed.models import FilteredTweet, TopicVibe, MyEngagementStats, Notification, NotificationType, ThreadContext, Tweet, Digest, DigestTopic
 
 
 class KeyboardListener:
@@ -235,7 +235,7 @@ class MosaicTile:
     def __init__(self, tweet: FilteredTweet, width: int, tile_id: int = 0, shortcut_num: int | None = None, is_selected: bool = False):
         self.tweet = tweet
         self.width = width
-        self.score = tweet.relevance_score
+        self.score = round(tweet.relevance_score)  # Round to clean integer
         self.is_superdunk = tweet.is_superdunk
         self.height = get_tile_height(self.score)
         self.tile_id = tile_id
@@ -856,6 +856,157 @@ class ThreadOverlay:
         )
 
 
+class DigestOverlay:
+    """Overlay panel showing clustered digest of tweets."""
+
+    def __init__(
+        self,
+        digest: Digest,
+        tweets: list[FilteredTweet],
+        width: int,
+        max_tweets_per_topic: int = 3,
+        is_startup: bool = False,
+    ):
+        self.digest = digest
+        self.tweets = tweets
+        self.width = width
+        self.max_tweets_per_topic = max_tweets_per_topic
+        self.is_startup = is_startup  # True if shown at startup (different messaging)
+        # Create tweet lookup
+        self.tweet_lookup = {ft.tweet.id: ft for ft in tweets}
+
+    def render(self) -> Panel:
+        """Render the digest overlay as a panel."""
+        lines: list[Text] = []
+
+        # Header
+        header = Text()
+        if self.is_startup:
+            header.append("WHILE YOU WERE AWAY", style="bold bright_cyan")
+        else:
+            header.append("DIGEST VIEW", style="bold bright_cyan")
+        header.append(f"  ({self.digest.time_window_str})", style="dim")
+        header.append(f"  •  {self.digest.total_tweets} tweets in {len(self.digest.topics)} topics", style="dim")
+        lines.append(header)
+        lines.append(Text())
+
+        # Render each topic
+        for topic in self.digest.topics:
+            # Topic header with emoji
+            topic_header = Text()
+            topic_header.append(f"{topic.emoji} ", style="bold")
+            topic_header.append(topic.name, style="bold bright_white")
+            lines.append(topic_header)
+
+            # Summary
+            summary = Text()
+            summary.append("  ", style="")
+            summary.append(topic.summary, style="italic dim")
+            lines.append(summary)
+
+            # Top tweets for this topic
+            topic_tweets = []
+            for tweet_id in topic.tweet_ids:
+                if tweet_id in self.tweet_lookup:
+                    topic_tweets.append(self.tweet_lookup[tweet_id])
+
+            # Sort by score
+            topic_tweets.sort(key=lambda x: x.relevance_score, reverse=True)
+
+            for ft in topic_tweets[:self.max_tweets_per_topic]:
+                tweet = ft.tweet
+                score = round(ft.relevance_score)
+
+                # Score color
+                if score >= 9:
+                    score_style = "bold green"
+                elif score >= 7:
+                    score_style = "yellow"
+                else:
+                    score_style = "dim"
+
+                # Truncate content
+                content = tweet.content.replace("\n", " ")
+                max_content = self.width - 25
+                if len(content) > max_content:
+                    content = content[:max_content - 3] + "..."
+
+                tweet_line = Text()
+                tweet_line.append(f"  [{score}] ", style=score_style)
+                tweet_line.append(f"{tweet.author_handle}: ", style="cyan")
+                tweet_line.append(content, style="white")
+                lines.append(tweet_line)
+
+            # Show remaining count
+            remaining = len(topic_tweets) - self.max_tweets_per_topic
+            if remaining > 0:
+                more_line = Text()
+                more_line.append(f"       +{remaining} more", style="dim")
+                lines.append(more_line)
+
+            lines.append(Text())  # Spacing between topics
+
+        body = Text("\n").join(lines)
+
+        # Subtitle with dismiss hint
+        if self.is_startup:
+            subtitle = "[any key] continue to mosaic"
+        else:
+            subtitle = "[Esc] close"
+
+        return Panel(
+            body,
+            title="[bold cyan]Digest[/bold cyan]",
+            subtitle=f"[dim]{subtitle}[/dim]",
+            box=box.DOUBLE,
+            border_style="bright_cyan",
+            width=self.width,
+            padding=(1, 2),
+        )
+
+
+class DigestBanner:
+    """Compact banner showing digest summary at top of mosaic."""
+
+    def __init__(self, digest: Digest, width: int):
+        self.digest = digest
+        self.width = width
+
+    def render(self) -> Panel:
+        """Render compact digest banner."""
+        lines: list[Text] = []
+
+        # One line per topic (compact)
+        for topic in self.digest.topics[:4]:  # Max 4 topics in banner
+            line = Text()
+            line.append(f"{topic.emoji} ", style="bold")
+            line.append(f"{topic.name}: ", style="bold white")
+
+            # Truncate summary to fit
+            max_summary = self.width - len(topic.name) - 10
+            summary = topic.summary
+            if len(summary) > max_summary:
+                summary = summary[:max_summary - 3] + "..."
+            line.append(summary, style="dim italic")
+            lines.append(line)
+
+        body = Text("\n").join(lines)
+
+        title = Text()
+        title.append("WHILE YOU WERE AWAY ", style="bold bright_cyan")
+        title.append(f"({self.digest.time_window_str})", style="dim cyan")
+
+        return Panel(
+            body,
+            title=title,
+            subtitle="[dim][any key] dismiss  [d] full digest[/dim]",
+            box=box.ROUNDED,
+            border_style="cyan",
+            width=self.width,
+            padding=(0, 1),
+        )
+
+
 class MosaicDisplay:
     """Live mosaic display of filtered tweets."""
 
@@ -915,6 +1066,14 @@ class MosaicDisplay:
         self.shortcut_grid: list[list[int]] = []
         # Error display: shows red bar at bottom when set
         self.error_message: str | None = None
+        # Digest overlay state
+        self.digest_overlay_visible: bool = False
+        self.digest_result: Digest | None = None
+        self.digest_loading: bool = False
+        self.digest_is_startup: bool = False  # True if shown automatically at startup
+        # Startup banner state (compact digest at top)
+        self.startup_banner_visible: bool = False
+        self.startup_banner_digest: Digest | None = None
 
     def create_tiles(self) -> list[MosaicTile]:
         """Create tiles for tweets with shortcut numbers."""
@@ -1257,6 +1416,50 @@ class MosaicDisplay:
 
         return Group(*elements)
 
+    def render_digest_overlay(self) -> Group:
+        """Render the digest overlay on top of mosaic."""
+        elements: list[RenderableType] = [
+            Align.center(self.render_header()),
+            Text(),
+        ]
+
+        if self.digest_result:
+            overlay_width = min(100, int(self.console.width * 0.9))
+            overlay = DigestOverlay(
+                self.digest_result,
+                self._all_tweets,
+                width=overlay_width,
+                is_startup=self.digest_is_startup,
+            )
+            elements.append(Text())
+            elements.append(Align.center(overlay.render()))
+
+        # Error bar at bottom
+        if self.error_message:
+            error_text = self.error_message[:80]
+            elements.append(Text())
+            elements.append(Align.center(Text(f" {error_text} ", style="bold bright_white on dark_red")))
+
+        return Group(*elements)
+
+    def render_digest_loading(self) -> Group:
+        """Render loading indicator while clustering for digest."""
+        elements: list[RenderableType] = [
+            Align.center(self.render_header()),
+            Text(),
+            Text(),
+            Text(),
+        ]
+
+        loading = Text()
+        loading.append("⟳ ", style="bold bright_cyan")
+        loading.append("Clustering tweets into topics...", style="cyan")
+        elements.append(Align.center(loading))
+        elements.append(Text())
+        elements.append(Align.center(Text("[Esc] cancel", style="dim")))
+
+        return Group(*elements)
+
     def render_loading(self) -> Group:
         """Render the loading screen with animated spinner."""
         now = time.time()
@@ -1348,6 +1551,14 @@ class MosaicDisplay:
         if self.is_initial_load:
             return self.render_loading()
 
+        # Show digest overlay if visible
+        if self.digest_overlay_visible and self.digest_result:
+            return self.render_digest_overlay()
+
+        # Show digest loading indicator
+        if self.digest_loading:
+            return self.render_digest_loading()
+
         # Show thread overlay if visible
         if self.thread_overlay_visible and self.thread_context:
             return self.render_thread_overlay()
@@ -1363,6 +1574,13 @@ class MosaicDisplay:
             Align.center(self.render_header()),
             Text(),
         ]
+
+        # Add startup banner if visible (shows "while you were away" summary)
+        if self.startup_banner_visible and self.startup_banner_digest:
+            banner_width = min(100, int(self.console.width * 0.9))
+            banner = DigestBanner(self.startup_banner_digest, banner_width)
+            elements.append(Align.center(banner.render()))
+            elements.append(Text())
 
         # Add vibe section at the top
         vibe_section = self.render_vibe_section()
@@ -1418,7 +1636,7 @@ class MosaicDisplay:
 
         elements.append(Text())
         elements.append(Align.center(self.render_legend()))
-        elements.append(Align.center(Text("[←↑↓→/1-9] select  [o]pen  [t]hread  [+/-] threshold  [c]ount  obj[e]ctives  [r]efresh  [q]uit", style="dim")))
+        elements.append(Align.center(Text("[←↑↓→/1-9] select  [o]pen  [t]hread  [d]igest  [+/-] threshold  [c]ount  obj[e]ctives  [r]efresh  [q]uit", style="dim")))
 
         # Error bar at bottom (only if there's an error)
         if self.error_message:
@@ -1536,8 +1754,18 @@ async def run_mosaic(
     # Thread fetch state
     thread_task: asyncio.Task | None = None
 
+    # Digest task state
+    digest_task: asyncio.Task | None = None
+
     # Import fetch_thread once for thread operations
     from xfeed.fetcher import fetch_thread
+
+    # Import digest clustering function
+    from xfeed.digest import cluster_tweets
+    from xfeed.session import get_session_db
+
+    # Startup digest threshold (hours since last session to show digest)
+    STARTUP_DIGEST_HOURS = 2.0
 
     async def do_refresh(cnt: int, thresh: int):
         """Perform refresh in background."""
@@ -1588,6 +1816,22 @@ async def run_mosaic(
                                 mosaic.update_tweets(tweets, vibes, engagement_stats)
                                 set_terminal_title(get_insight(vibes, tweets))
                                 mosaic.error_message = None  # Clear any error on success
+
+                                # Check if we should show startup digest
+                                session_db = get_session_db()
+                                hours_since = session_db.get_last_seen_hours_ago()
+                                if hours_since is not None and hours_since >= STARTUP_DIGEST_HOURS and len(tweets) >= 5:
+                                    # Cluster tweets for startup banner
+                                    try:
+                                        startup_digest = cluster_tweets(tweets, hours_since)
+                                        mosaic.startup_banner_digest = startup_digest
+                                        mosaic.startup_banner_visible = True
+                                    except Exception:
+                                        pass  # Silently skip banner if clustering fails
+
+                                # Update last_seen timestamp
+                                session_db.set_last_seen()
+
                             mosaic.is_initial_load = False
                             last_refresh = now
                         except Exception as e:
@@ -1689,6 +1933,21 @@ async def run_mosaic(
                         mosaic.thread_background_refresh = False
                         mosaic.thread_fetch_url = None
 
+                    # Check if digest clustering completed
+                    if digest_task is not None and digest_task.done():
+                        try:
+                            digest_result = digest_task.result()
+                            if digest_result:
+                                mosaic.digest_result = digest_result
+                                mosaic.digest_overlay_visible = True
+                                mosaic.error_message = None
+                            else:
+                                mosaic.error_message = "Digest clustering failed: no result"
+                        except Exception as e:
+                            mosaic.error_message = f"Digest failed: {str(e)[:60]}"
+                        digest_task = None
+                        mosaic.digest_loading = False
+
                     # Handle keyboard input - process keys with proper escape sequence handling
                     should_quit = False
                     should_refresh = False
@@ -1750,6 +2009,37 @@ async def run_mosaic(
                                     mosaic.thread_stack = []
                             continue  # Don't process other keys when overlay visible
 
+                        # Handle digest overlay
+                        if mosaic.digest_overlay_visible:
+                            if key == 'escape' or key == 'q':
+                                mosaic.digest_overlay_visible = False
+                                mosaic.digest_result = None
+                                mosaic.digest_is_startup = False
+                            continue  # Don't process other keys when overlay visible
+
+                        # Handle digest loading cancellation
+                        if mosaic.digest_loading:
+                            if key == 'escape' or key == 'q':
+                                if digest_task and not digest_task.done():
+                                    digest_task.cancel()
+                                mosaic.digest_loading = False
+                                digest_task = None
+                            continue
+
+                        # Handle startup banner dismissal
+                        if mosaic.startup_banner_visible:
+                            if key == 'd':
+                                # Show full digest overlay instead
+                                mosaic.startup_banner_visible = False
+                                if mosaic.startup_banner_digest:
+                                    mosaic.digest_result = mosaic.startup_banner_digest
+                                    mosaic.digest_is_startup = True
+                                    mosaic.digest_overlay_visible = True
+                            else:
+                                # Any other key dismisses banner
+                                mosaic.startup_banner_visible = False
+                            continue
+
                         # Handle thread loading cancellation
                         if mosaic.thread_loading:
                             if key == 'escape' or key == 'q':  # Cancel loading
@@ -1810,6 +2100,22 @@ async def run_mosaic(
                                         mosaic.thread_loading = True
                                         mosaic.thread_fetch_url = url
                                         thread_task = asyncio.create_task(fetch_thread(url))
+                        elif key == 'd':
+                            # Show digest overlay - cluster current tweets
+                            if digest_task is None and len(mosaic._all_tweets) >= 3:
+                                mosaic.digest_loading = True
+                                mosaic.digest_is_startup = False
+                                # Get time since last refresh as window
+                                time_window = (now - last_refresh) / 3600  # hours
+                                if time_window < 0.5:
+                                    time_window = 1.0  # Default to 1 hour if very recent
+                                loop = asyncio.get_event_loop()
+                                digest_task = loop.run_in_executor(
+                                    None,
+                                    cluster_tweets,
+                                    mosaic._all_tweets,
+                                    time_window,
+                                )
                         elif key == '+' or key == '=':
                             if mosaic.threshold < 10:
                                 mosaic.threshold += 1
@@ -1873,6 +2179,11 @@ async def run_mosaic(
             try:
                 await thread_task
             except asyncio.CancelledError:
+                pass
+        if digest_task is not None:
+            try:
+                digest_task.cancel()
+            except Exception:
                 pass
         keyboard.stop()
         # Restore default terminal title

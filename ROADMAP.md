@@ -6,8 +6,8 @@ A curated list of improvements to make xfeed the best X client for cutting throu
 
 ## High Impact
 
-### 1. "While You Were Away" Digest
-Summarize what happened since last check. Cluster by topic, show top 3 tweets per topic. Perfect for catching up after being offline.
+### 1. ~~"While You Were Away" Digest~~ ✓
+~~Summarize what happened since last check. Cluster by topic, show top 3 tweets per topic. Perfect for catching up after being offline.~~ → `xfeed digest`
 
 ### 2. Link Expansion
 Fetch and summarize linked articles inline using Claude. "This tweet links to: [2-sentence summary]". No more clicking through to understand context.
@@ -73,3 +73,4 @@ Color-code tiles by sentiment in addition to relevance. Distinguish excited/opti
 - [x] Thread caching with background refresh
 - [x] Arrow key navigation on mosaic (↑↓←→ grid navigation)
 - [x] Error bar display (transient red bar for failures, clears on success)
+- [x] "While You Were Away" digest with topic clustering (`xfeed digest` + mosaic integration)

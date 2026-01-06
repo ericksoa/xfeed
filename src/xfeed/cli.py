@@ -27,7 +27,7 @@ from xfeed.config import (
 )
 from xfeed.filter import filter_tweets
 from xfeed.models import FilteredTweet
-from xfeed.fetcher import fetch_timeline, fetch_all_engagement
+from xfeed.fetcher import fetch_timeline, fetch_all_engagement, fetch_since
 
 
 console = Console()
@@ -414,6 +414,130 @@ def watch(interval: int, count: int, threshold: int, top: int):
             time.sleep(interval * 60)
     except KeyboardInterrupt:
         console.print("\n[magenta dim]XFEED watch stopped[/magenta dim]")
+
+
+@main.command()
+@click.option("--since", "-s", type=float, help="Hours to look back (overrides last session)")
+@click.option("--count", "-n", default=100, help="Max tweets to fetch (default: 100)")
+@click.option("--threshold", "-t", default=5, help="Minimum relevance score (default: 5)")
+def digest(since: float | None, count: int, threshold: int):
+    """Show clustered summary of tweets since last session.
+
+    A "While You Were Away" digest that clusters tweets into topics,
+    helping you catch up quickly after being offline.
+
+    Examples:
+
+        xfeed digest              # Since last session
+
+        xfeed digest --since 12   # Last 12 hours
+
+        xfeed digest -s 24 -t 7   # Last 24 hours, high quality only
+    """
+    from datetime import timedelta
+    from xfeed.session import get_session_db
+    from xfeed.digest import cluster_tweets, render_digest
+
+    if not ensure_setup():
+        sys.exit(1)
+
+    session_db = get_session_db()
+
+    # Determine time window
+    if since is not None:
+        # User specified --since flag
+        since_time = datetime.now() - timedelta(hours=since)
+        time_window_hours = since
+    else:
+        # Use last_seen from database
+        last_seen = session_db.get_last_seen()
+        if last_seen is None:
+            # First run - default to 24 hours
+            console.print("[dim]First digest - looking back 24 hours[/dim]")
+            since_time = datetime.now() - timedelta(hours=24)
+            time_window_hours = 24.0
+        else:
+            since_time = last_seen
+            time_window_hours = session_db.get_last_seen_hours_ago() or 24.0
+
+    console.print(f"[dim]Fetching tweets from the last {time_window_hours:.1f} hours...[/dim]")
+
+    # Fetch tweets
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Fetching timeline...", total=None)
+
+        try:
+            tweets, _my_handle = asyncio.run(fetch_since(
+                since=since_time,
+                max_count=count,
+                headless=True,
+                on_progress=lambda current, total: progress.update(
+                    task, description=f"Fetched {current}/{total} tweets..."
+                ),
+            ))
+        except RuntimeError as e:
+            progress.stop()
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+        progress.update(task, description=f"Found {len(tweets)} tweets in time window")
+
+    if not tweets:
+        console.print(f"[yellow]No tweets found in the last {time_window_hours:.1f} hours.[/yellow]")
+        # Still update last_seen so next digest starts fresh
+        session_db.set_last_seen()
+        return
+
+    # Filter tweets
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Filtering with Claude...", total=None)
+
+        filtered = filter_tweets(
+            tweets,
+            threshold=threshold,
+            on_progress=lambda current, total: progress.update(
+                task, description=f"Analyzed {current}/{total} tweets..."
+            ),
+        )
+
+        progress.update(task, description=f"Found {len(filtered)} relevant tweets")
+
+    if not filtered:
+        console.print("[yellow]No tweets matched your interests.[/yellow]")
+        session_db.set_last_seen()
+        return
+
+    # Cluster tweets
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Clustering into topics...", total=None)
+
+        digest_result = cluster_tweets(filtered, time_window_hours)
+
+        progress.update(
+            task,
+            description=f"Organized into {len(digest_result.topics)} topics"
+        )
+
+    console.print()
+
+    # Render the digest
+    render_digest(digest_result, filtered, console)
+
+    # Update last_seen timestamp
+    session_db.set_last_seen()
+    console.print("\n[dim]Session marked. Next digest will start from now.[/dim]")
 
 
 @main.group()
